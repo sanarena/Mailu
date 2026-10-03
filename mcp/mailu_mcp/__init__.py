@@ -1,4 +1,5 @@
-"""Mailu MCP: mail + admin tools. Branch: feature/admin-mcp (stacked on mail-mcp)."""
+"""Mailu MCP: mail + admin + Gmail import. Branch: feature/gmail-import."""
+from . import gmail_import
 from .admin import AdminClient, AdminError
 from .mail import (
     MailConfig,

@@ -1,18 +1,19 @@
-"""Mailu MCP server — admin lane (feature/admin-mcp).
+"""Mailu MCP server — Gmail-import lane (feature/gmail-import).
 
-Stdio entry point exposing mail tools plus the full Mailu admin REST API
-as MCP tools. Gmail-import tools live on their own branch;
-feature/combined serves every tool at once.
+Stdio entry point exposing mail tools, the full Mailu admin REST API and
+Gmail search/copy-job tools. feature/combined serves this same full set
+with unified docs and end-to-end smoke tests.
 """
 from typing import Any, Dict
 
+from . import gmail_import as gmail_mod
 from .admin import AdminClient, AdminError
 from .config import load_config
 from . import mail as mail_mod
 from .protocol import McpServer
 
-SERVER_NAME = "mailu-admin"
-SERVER_VERSION = "0.2.0"
+SERVER_NAME = "mailu-gmail-import"
+SERVER_VERSION = "0.3.0"
 
 
 def build_server() -> McpServer:
@@ -107,7 +108,54 @@ def build_server() -> McpServer:
                                               args.get("expunge", True))}
 
     register_admin_tools(server)
+    register_gmail_tools(server)
     return server
+
+
+def register_gmail_tools(server: McpServer) -> None:
+    """Register Gmail search + copy-job tools."""
+
+    @server.tool("gmail_search", "Run a Gmail search query, return matching message metadata.",
+                 {"type": "object", "required": ["query"],
+                  "properties": {
+                      "query": {"type": "string",
+                                "description": "Gmail search query, e.g. 'from:boss newer_than:30d has:attachment'"},
+                      "max_results": {"type": "integer", "default": 50},
+                      "label_ids": {"type": "array", "items": {"type": "string"}}}})
+    def _gsearch(args):
+        cfg = load_config()
+        return gmail_mod.gmail_search(cfg.gmail, args["query"],
+                                      args.get("max_results", 50),
+                                      args.get("label_ids"))
+
+    @server.tool("gmail_import_run", "Copy job: search Gmail by query, APPEND every match verbatim to a Mailu mailbox.",
+                 {"type": "object", "required": ["query"],
+                  "properties": {
+                      "query": {"type": "string"},
+                      "dest_mailbox": {"type": "string", "default": "INBOX"},
+                      "max_messages": {"type": "integer", "default": 100},
+                      "dry_run": {"type": "boolean", "default": False},
+                      "job_name": {"type": "string", "default": "default"},
+                      "label_ids": {"type": "array", "items": {"type": "string"}},
+                      "mark_source_read": {"type": "boolean", "default": False},
+                      "skip_existing": {"type": "boolean", "default": True}}})
+    def _grun(args):
+        app = load_config()
+        job = gmail_mod.CopyJob(query=args["query"],
+                                dest_mailbox=args.get("dest_mailbox", "INBOX"),
+                                max_messages=args.get("max_messages", 100),
+                                dry_run=args.get("dry_run", False),
+                                job_name=args.get("job_name", "default"),
+                                label_ids=args.get("label_ids"),
+                                mark_source_read=args.get("mark_source_read", False),
+                                skip_existing=args.get("skip_existing", True))
+        return gmail_mod.run_copy_job(app, job).as_dict()
+
+    @server.tool("gmail_import_status", "Show copy-job state: how many Gmail IDs already copied.",
+                 {"type": "object",
+                  "properties": {"job_name": {"type": "string", "default": "default"}}})
+    def _gstatus(args):
+        return gmail_mod.job_status(args.get("job_name", "default"))
 
 
 def register_admin_tools(server: McpServer) -> None:

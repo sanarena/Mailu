@@ -20,6 +20,28 @@ Tokens: `admin_tokens_list/create`, `admin_tokens_of_user`,
 
 Auth: `MAILU_API_BASE` + `MAILU_API_TOKEN` (Mailu `API_TOKEN`).
 
+# Mailu MCP — `feature/gmail-import` (stacked on `feature/admin-mcp`)
+
+Adds Gmail → Mailu copy jobs.
+
+## Import tools (3)
+
+| Tool | What it does |
+|---|---|
+| `gmail_search` | Run a Gmail search `query` (`max_results`, `label_ids`) → id/thread/subject/from/date/snippet |
+| `gmail_import_run` | Copy job: every match `APPEND`ed verbatim (raw RFC822) to Mailu `dest_mailbox`; params `query`, `dest_mailbox`, `max_messages`, `dry_run`, `job_name`, `label_ids`, `mark_source_read`, `skip_existing` |
+| `gmail_import_status` | Job state: copied total, last query, copied Gmail IDs |
+
+Jobs are idempotent (state file at `~/.cache/mailu-mcp/import-state.json`,
+override with `MAILU_IMPORT_STATE`); `dry_run` previews matches.
+Gmail auth: `GMAIL_CLIENT_ID` + `GMAIL_CLIENT_SECRET` + `GMAIL_REFRESH_TOKEN`
+(auto-refreshed), or a ready `GMAIL_ACCESS_TOKEN`. Alternative source:
+Gmail IMAP (`imap.gmail.com` + app password) via the shared mail module.
+
+Example: `{query: "in:inbox newer_than:7d", dest_mailbox: "INBOX",
+job_name: "weekly-catchup", dry_run: true}` first, then re-run with
+`dry_run: false` to copy.
+
 ## Tools
 
 | Tool | What it does |
