@@ -57,6 +57,21 @@ class CombinedTests(unittest.TestCase):
         self.assertTrue(resps[3]["result"]["isError"])
         self.assertEqual(resps[4]["result"], {})
 
+    def test_malformed_arguments_never_crash(self):
+        resps = session([
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "mail_search", "arguments": [1, 2]}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "admin_user_get", "arguments": "x"}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "gmail_import_run", "arguments": None}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/list"},
+        ])
+        self.assertEqual(len(resps), 4)
+        for r in resps[:3]:
+            self.assertTrue(r["result"]["isError"], r)
+        self.assertEqual(len(resps[3]["result"]["tools"]), 53)
+
 
 if __name__ == "__main__":
     unittest.main()
