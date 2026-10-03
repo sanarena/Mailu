@@ -33,15 +33,33 @@ class AdminClient:
         if not cfg.api_token:
             raise ValueError("MAILU_API_TOKEN is not configured")
         self.cfg = cfg
+        self._user_auth: Optional[tuple] = None
+
+    def as_user(self, email: str, token: str) -> "AdminClient":
+        """Clone acting as one user (SimpleLogin-style ``email:token`` auth)."""
+        import copy
+        clone = copy.copy(self)
+        clone._user_auth = (email, token)
+        return clone
 
     def _request(self, method: str, path: str,
-                 body: Optional[Dict[str, Any]] = None) -> Any:
+                 body: Optional[Dict[str, Any]] = None,
+                 query: Optional[Dict[str, Any]] = None,
+                 version: str = "v1") -> Any:
         quoted = "/".join(urllib.parse.quote(seg, safe="@._-")
                           for seg in path.lstrip("/").split("/"))
-        url = f"{self.cfg.base_url}/v1/{quoted}"
+        base = f"{self.cfg.base_url}/{version}/{quoted}" if version else \
+            f"{self.cfg.base_url}/{quoted}"
+        if query:
+            base += "?" + urllib.parse.urlencode(
+                {k: v for k, v in query.items() if v is not None})
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method.upper())
-        req.add_header("Authorization", f"Bearer {self.cfg.api_token}")
+        req = urllib.request.Request(base, data=data, method=method.upper())
+        if self._user_auth:
+            email, token = self._user_auth
+            req.add_header("Authentication", f"{email}:{token}")
+        else:
+            req.add_header("Authorization", f"Bearer {self.cfg.api_token}")
         req.add_header("Content-Type", "application/json")
         req.add_header("Accept", "application/json")
         try:
@@ -116,6 +134,25 @@ class AdminClient:
     def delete_alias(self, alias: str): return self._request("DELETE", f"alias/{alias}")
 
     def aliases_by_domain(self, domain: str): return self._request("GET", f"alias/destination/{domain}")
+
+    def list_my_aliases(self): return self._request("GET", "alias/me")
+
+    def delete_my_alias(self, alias: str): return self._request("DELETE", f"alias/me/{alias}")
+
+    def update_my_alias(self, alias: str, **kw):
+        return self._request("PATCH", f"alias/me/{alias}", _body(kw, ("alias",)))
+
+    def available_alias_domains(self): return self._request("GET", "alias/domains/available")
+
+    def create_random_alias(self, email: str, token: str,
+                            note: Optional[str] = None,
+                            hostname: Optional[str] = None):
+        """SimpleLogin-compatible random alias (per-user email:token auth)."""
+        return self.as_user(email, token)._request(
+            "POST", "alias/random/new",
+            {"note": note} if note is not None else {},
+            query={"hostname": hostname} if hostname else None,
+            version="")
 
     # -- relays ------------------------------------------------------------
     def list_relays(self): return self._request("GET", "relay")

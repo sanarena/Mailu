@@ -33,7 +33,8 @@ captured = {}
 def fake_urlopen(req, timeout=None):
     captured["url"] = req.full_url
     captured["method"] = req.get_method()
-    captured["auth"] = req.get_header("Authorization")
+    captured["auth"] = (req.get_header("Authorization")
+                        or req.get_header("Authentication"))
     if req.data:
         captured["body"] = json.loads(req.data.decode())
     if "domain/example.com" in req.full_url and req.get_method() == "GET":
@@ -123,6 +124,26 @@ class AdminTests(unittest.TestCase):
         self.assertTrue(resp["result"]["isError"])
         self.assertIn("401", resp["result"]["content"][0]["text"])
 
+    @patch("mcp.mailu_mcp.admin.urllib.request.urlopen", fake_urlopen)
+    def test_my_alias_and_available_domains(self):
+        self.assertEqual(self.client.list_my_aliases()[0]["name"], "example.com")
+        self.assertTrue(captured["url"].endswith("/v1/alias/me"))
+        self.client.delete_my_alias("a+b@example.com")
+        self.assertTrue(captured["url"].endswith("/v1/alias/me/a%2Bb@example.com"))
+        self.client.update_my_alias("x@example.com", disabled=True)
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["body"], {"disabled": True})
+
+    @patch("mcp.mailu_mcp.admin.urllib.request.urlopen", fake_urlopen)
+    def test_random_alias_uses_user_auth_and_unversioned_path(self):
+        self.client.create_random_alias("u@example.com", "tok123",
+                                        note="n", hostname="h.example")
+        self.assertEqual(captured["method"], "POST")
+        self.assertTrue(captured["url"].endswith(
+            "/api/alias/random/new?hostname=h.example"), captured["url"])
+        self.assertEqual(captured["auth"], "u@example.com:tok123")
+        self.assertEqual(captured["body"], {"note": "n"})
+
     def test_all_admin_tools_registered(self):
         names = set(build_server().tools)
         for expected in ("admin_domains_list", "admin_domain_get",
@@ -138,6 +159,10 @@ class AdminTests(unittest.TestCase):
                          "admin_aliases_list", "admin_alias_get",
                          "admin_alias_create", "admin_alias_update",
                          "admin_alias_delete", "admin_aliases_by_domain",
+                         "admin_myaliases_list", "admin_myalias_delete",
+                         "admin_myalias_update",
+                         "admin_alias_domains_available",
+                         "admin_random_alias_create",
                          "admin_relays_list", "admin_relay_get",
                          "admin_relay_create", "admin_relay_update",
                          "admin_relay_delete", "admin_tokens_list",

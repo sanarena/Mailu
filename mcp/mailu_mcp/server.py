@@ -210,6 +210,12 @@ def register_admin_tools(server: McpServer) -> None:
         ("admin_alias_update", "Update an alias (PATCH).", "update_alias", ["alias"]),
         ("admin_alias_delete", "Delete an alias.", "delete_alias", ["alias"]),
         ("admin_aliases_by_domain", "Look up aliases of a domain.", "aliases_by_domain", ["domain"]),
+        ("admin_myaliases_list", "List anonymous aliases of the current API user.", "list_my_aliases", []),
+        ("admin_myalias_delete", "Permanently delete one of your anonymous aliases.", "delete_my_alias", ["alias"]),
+        ("admin_myalias_update", "Modify your anonymous alias (disabled/note/hostname/destination).", "update_my_alias", ["alias"]),
+        ("admin_alias_domains_available", "List domains available for alias creation.", "available_alias_domains", []),
+        ("admin_random_alias_create", "Create a random anonymous alias (SimpleLogin/Bitwarden compatible; per-user email+token auth, optional note/hostname).",
+         "create_random_alias", ["email", "token"]),
         # relays
         ("admin_relays_list", "List all relayed domains.", "list_relays", []),
         ("admin_relay_get", "Look up one relayed domain.", "get_relay", ["name"]),

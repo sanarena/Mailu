@@ -168,7 +168,7 @@ class GmailTests(unittest.TestCase):
         names = set(build_server().tools)
         for expected in ("gmail_search", "gmail_import_run", "gmail_import_status"):
             self.assertIn(expected, names, expected)
-        self.assertGreaterEqual(len(names), 7 + 38 + 3)
+        self.assertGreaterEqual(len(names), 7 + 43 + 3)
 
 
 if __name__ == "__main__":

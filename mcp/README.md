@@ -8,9 +8,9 @@ Mail tools + full Mailu admin REST API + Gmail → Mailu copy jobs over MCP
 | Branch | Contains | Tools |
 |---|---|---|
 | `feature/mail-mcp` | IMAP search/read + SMTP send | 7 `mail_*` |
-| `feature/admin-mcp` | + admin REST API (domains, users, aliases, relays, tokens, alternatives, managers) | + 38 `admin_*` |
+| `feature/admin-mcp` | + admin REST API (domains, users, aliases, relays, tokens, alternatives, managers, random-alias) | + 43 `admin_*` |
 | `feature/gmail-import` | + Gmail search + copy jobs | + 3 `gmail_*` |
-| `feature/combined` (here) | all lanes + end-to-end smoke test | 48 total |
+| `feature/combined` (here) | all lanes + end-to-end smoke test | 53 total |
 
 Branches are stacked (each builds on the previous) so every branch works
 standalone; `feature/combined` is where all lanes are tested together.
