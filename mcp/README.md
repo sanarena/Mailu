@@ -1,7 +1,7 @@
-# Mailu MCP — `feature/combined`: everything at once
+# Mailu MCP — `feature/http-auth`: everything over stdio or HTTP
 
 Mail tools + full Mailu admin REST API + Gmail → Mailu copy jobs over MCP
-(stdio), Python 3.9+ stdlib only — no third-party dependencies.
+(stdio or HTTP), Python 3.9+ stdlib only — no third-party dependencies.
 
 ## Branches
 
@@ -10,7 +10,8 @@ Mail tools + full Mailu admin REST API + Gmail → Mailu copy jobs over MCP
 | `feature/mail-mcp` | IMAP search/read + SMTP send | 7 `mail_*` |
 | `feature/admin-mcp` | + admin REST API (domains, users, aliases, relays, tokens, alternatives, managers, random-alias) | + 43 `admin_*` |
 | `feature/gmail-import` | + Gmail search + copy jobs | + 3 `gmail_*` |
-| `feature/combined` (here) | all lanes + end-to-end smoke test | 53 total |
+| `feature/combined` | all lanes + end-to-end smoke test | 53 total |
+| `feature/http-auth` (here) | + HTTP transport with Bearer auth, k8s LB manifests | 53 over stdio or HTTP |
 
 Branches are stacked (each builds on the previous) so every branch works
 standalone; `feature/combined` is where all lanes are tested together.
@@ -78,10 +79,32 @@ PYTHONPATH=mcp python3 -m mailu_mcp.server
 
 Speak MCP over stdio: `initialize` → `tools/list` → `tools/call`.
 
+## HTTP (public load balancer)
+
+```bash
+export MCP_HTTP_TOKEN="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
+PYTHONPATH=mcp python3 -m mailu_mcp.server --http --port 8000
+curl -s http://127.0.0.1:8000/healthz   # LB probe, no auth
+curl -s -H "Authorization: Bearer $MCP_HTTP_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp              # 53 tools
+```
+
+Rules: one JSON-RPC message per `POST /mcp` (same shapes as stdio);
+`GET /healthz` is the only unauthenticated route; the server refuses to
+start without `MCP_HTTP_TOKEN` (constant-time compare, 401/403 codes);
+bodies are capped at `MCP_HTTP_MAX_BODY`. It speaks plain HTTP — always
+terminate TLS at the load balancer / ingress.
+
+Kubernetes: `mcp/k8s/deployment.yaml` (single replica, `/healthz`
+liveness/readiness) + `mcp/k8s/service.yaml` (`LoadBalancer`) read all
+config from the `mailu-mcp-env` Secret (see `secret.example.yaml`,
+which now includes `MCP_HTTP_TOKEN`).
+
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 44 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 57 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 7 mail + 43 admin + 3 gmail tools
 ```

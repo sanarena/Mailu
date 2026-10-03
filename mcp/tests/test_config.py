@@ -34,6 +34,21 @@ class ConfigTests(unittest.TestCase):
                 load_config()
         self.assertIn("MAILU_IMAP_PORT", str(ctx.exception))
 
+    def test_http_defaults_and_override(self):
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = load_config()
+        self.assertEqual(cfg.http.host, "127.0.0.1")
+        self.assertEqual(cfg.http.port, 8000)
+        self.assertEqual(cfg.http.token, "")
+        self.assertEqual(cfg.http.max_body, 1024 * 1024)
+        env = {"MCP_HTTP_HOST": "0.0.0.0", "MCP_HTTP_PORT": "9000",
+               "MCP_HTTP_TOKEN": "s3cret"}
+        with patch.dict(os.environ, env, clear=True):
+            cfg = load_config()
+        self.assertEqual(cfg.http.host, "0.0.0.0")
+        self.assertEqual(cfg.http.port, 9000)
+        self.assertEqual(cfg.http.token, "s3cret")
+
 
 if __name__ == "__main__":
     unittest.main()

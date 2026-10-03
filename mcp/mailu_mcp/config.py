@@ -45,10 +45,19 @@ class GmailConfig:
 
 
 @dataclass
+class HttpConfig:
+    host: str = "127.0.0.1"
+    port: int = 8000
+    token: str = ""
+    max_body: int = 1024 * 1024
+
+
+@dataclass
 class AppConfig:
     mail: MailConfig = field(default_factory=MailConfig)
     admin: AdminConfig = field(default_factory=AdminConfig)
     gmail: GmailConfig = field(default_factory=GmailConfig)
+    http: HttpConfig = field(default_factory=HttpConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -76,7 +85,13 @@ class AppConfig:
             refresh_token=os.getenv("GMAIL_REFRESH_TOKEN", ""),
             access_token=os.getenv("GMAIL_ACCESS_TOKEN", ""),
         )
-        return cls(mail=mail, admin=admin, gmail=gmail)
+        http = HttpConfig(
+            host=os.getenv("MCP_HTTP_HOST", "127.0.0.1"),
+            port=_int("MCP_HTTP_PORT", 8000),
+            token=os.getenv("MCP_HTTP_TOKEN", ""),
+            max_body=_int("MCP_HTTP_MAX_BODY", 1024 * 1024),
+        )
+        return cls(mail=mail, admin=admin, gmail=gmail, http=http)
 
 
 def load_config() -> AppConfig:

@@ -1,5 +1,6 @@
-"""Mailu MCP: mail + admin + Gmail import. Branch: feature/combined."""
+"""Mailu MCP: mail + admin + Gmail import over stdio or HTTP. Branch: feature/http-auth."""
 from . import gmail_import
+from . import httpserve
 from .admin import AdminClient, AdminError
 from .mail import (
     MailConfig,

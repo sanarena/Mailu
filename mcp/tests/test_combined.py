@@ -40,7 +40,7 @@ class CombinedTests(unittest.TestCase):
             del os.environ["MAILU_IMPORT_STATE"]
         # notification (no id) produces no response
         self.assertEqual(len(resps), 5)
-        self.assertEqual(resps[0]["result"]["serverInfo"]["name"], "mailu-gmail-import")
+        self.assertEqual(resps[0]["result"]["serverInfo"]["name"], "mailu")
         tools = resps[1]["result"]["tools"]
         names = [t["name"] for t in tools]
         self.assertEqual(len(names), len(set(names)), "tool names must be unique")

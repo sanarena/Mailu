@@ -1,8 +1,9 @@
-"""Mailu MCP server — Gmail-import lane (feature/gmail-import).
+"""Mailu MCP server — HTTP lane (feature/http-auth).
 
-Stdio entry point exposing mail tools, the full Mailu admin REST API and
-Gmail search/copy-job tools. feature/combined serves this same full set
-with unified docs and end-to-end smoke tests.
+Stdio (default) or HTTP (`--http`) entry point exposing mail tools, the
+full Mailu admin REST API and Gmail search/copy-job tools. HTTP mode is
+built for public load balancers: Bearer-token auth on /mcp, /healthz
+for probes, plain HTTP (terminate TLS at the LB).
 """
 from typing import Any, Dict
 
@@ -12,8 +13,8 @@ from .config import load_config
 from . import mail as mail_mod
 from .protocol import McpServer
 
-SERVER_NAME = "mailu-gmail-import"
-SERVER_VERSION = "0.3.0"
+SERVER_NAME = "mailu"
+SERVER_VERSION = "0.4.0"
 
 
 def build_server() -> McpServer:
@@ -242,8 +243,24 @@ def register_admin_tools(server: McpServer) -> None:
             lambda args, _m=method, _req=required: _call(_m, args, _req))
 
 
-def main() -> None:
-    build_server().run()
+def main(argv=None) -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Mailu MCP server (stdio or HTTP)")
+    ap.add_argument("--http", action="store_true",
+                    help="serve JSON-RPC over HTTP instead of stdio")
+    ap.add_argument("--host", default=None,
+                    help="HTTP bind address (default: MCP_HTTP_HOST or 127.0.0.1)")
+    ap.add_argument("--port", type=int, default=None,
+                    help="HTTP port (default: MCP_HTTP_PORT or 8000)")
+    args = ap.parse_args(argv)
+    server = build_server()
+    if args.http:
+        from .httpserve import serve_http
+        cfg = load_config().http
+        serve_http(server, args.host or cfg.host, args.port or cfg.port,
+                   cfg.token, cfg.max_body)
+    else:
+        server.run()
 
 
 if __name__ == "__main__":

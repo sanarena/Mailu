@@ -1,0 +1,16 @@
+# Public entry point. Terminate TLS at the load balancer / ingress:
+# the MCP server speaks plain HTTP and authenticates via Bearer token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailu-mcp
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: mailu-mcp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

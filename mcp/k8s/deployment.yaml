@@ -1,0 +1,53 @@
+# Long-lived MCP server behind a public load balancer.
+# Needs: image pushed, mcp/k8s/secret.yaml applied (Mailu creds +
+# MCP_HTTP_TOKEN). Single replica: Gmail import state is a local file,
+# so copies must not run on two pods at once.
+#   kubectl apply -f mcp/k8s/secret.yaml
+#   kubectl apply -f mcp/k8s/deployment.yaml -f mcp/k8s/service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailu-mcp
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mailu-mcp
+  template:
+    metadata:
+      labels:
+        app: mailu-mcp
+    spec:
+      containers:
+        - name: mcp
+          image: <you>/mailu-mcp:latest
+          imagePullPolicy: Always
+          args: ["--http", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: mailu-mcp-env
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
