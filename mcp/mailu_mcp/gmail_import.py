@@ -90,10 +90,14 @@ def _payload_headers(payload: dict) -> Dict[str, str]:
     return out
 
 
+MAX_SEARCH_RESULTS = 2000
+
+
 def gmail_search(cfg: GmailConfig, query: str, max_results: int = 50,
                  label_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Run a Gmail search query; return message metadata (id/thread/subject/from/date)."""
-    params: Dict[str, Any] = {"q": query, "maxResults": max(1, min(int(max_results), 500))}
+    max_results = min(max(int(max_results), 0), MAX_SEARCH_RESULTS)
+    params: Dict[str, Any] = {"q": query, "maxResults": min(max(max_results, 1), 500)}
     if label_ids:
         params["labelIds"] = list(label_ids)
     found: List[Dict[str, Any]] = []
@@ -183,7 +187,9 @@ class CopyJob:
 
 
 def state_key(job_name: str, owner: str = "") -> str:
-    return f"{owner}:{job_name}" if owner else job_name
+    # Owner lower-cased: "Alice@x" and "alice@x" are the same mailbox and
+    # must share state, otherwise a case variant re-copies everything.
+    return f"{owner.lower()}:{job_name}" if owner else job_name
 
 
 @dataclass

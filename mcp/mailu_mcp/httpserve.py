@@ -221,7 +221,7 @@ def make_handler(server_factory, admin_token: str, max_body: int,
                                      mail_config=user_mail_config(identity),
                                      allow_server_gmail=False)
                 server = server_factory(ctx)
-                if method == "tools/call":
+                if method == "tools/call" and isinstance(params, dict):
                     name = params.get("name", "")
                     if not name.startswith(USER_TOOL_PREFIXES):
                         limiter.failed(ip)

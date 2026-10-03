@@ -71,6 +71,8 @@ class McpServer:
         if method == "tools/list":
             return ok({"tools": self._tool_list()})
         if method == "tools/call":
+            if not isinstance(params, dict):
+                return err(-32602, "Invalid params: object expected")
             name = params.get("name", "")
             args = params.get("arguments") or {}
             tool = self.tools.get(name)

@@ -158,6 +158,20 @@ class HttpTests(ServedCase):
                                   {"name": name, "arguments": {}})
             self.assertEqual(status, 200, name)
 
+    def test_malformed_call_params_get_clean_error(self):
+        # Non-dict params must not kill the HTTP connection.
+        status, body = self._post("/mcp", {"jsonrpc": "2.0", "id": 9,
+                                           "method": "tools/call",
+                                           "params": [1, 2]},
+                                  auth=basic("a@x.io", "pw"))
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["error"]["code"], -32602)
+        status, _ = self._post("/mcp", {"jsonrpc": "2.0", "id": 10,
+                                        "method": "tools/call",
+                                        "params": [1, 2]},
+                               auth=f"Bearer {TOKEN}")
+        self.assertEqual(status, 200)
+
     def test_notification_gets_202_without_body(self):
         status, body = self._post("/mcp", {"jsonrpc": "2.0",
                                            "method": "notifications/initialized"},

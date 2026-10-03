@@ -62,6 +62,28 @@ class GmailTests(unittest.TestCase):
         list_call = [c for c in calls if c[0] == "/users/me/messages"][0]
         self.assertEqual(list_call[1]["q"], "from:alice")
 
+    def test_search_total_is_capped(self):
+        calls = []
+
+        def fake(cfg, path, params=None):
+            if path == "/users/me/messages":
+                calls.append(params.get("maxResults"))
+                return {"messages": [{"id": f"g{n}"} for n in range(500)],
+                        "nextPageToken": "more"}
+            return {"id": "x", "labelIds": [], "payload": {"headers": []},
+                    "snippet": ""}
+
+        with patch.object(gi, "_api", fake):
+            out = gi.gmail_search(self.gmail, "x", max_results=10 ** 9)
+        self.assertEqual(len(out), 2000)
+        self.assertTrue(calls and all(c <= 500 for c in calls))
+        with patch.object(gi, "_api", fake):
+            self.assertEqual(gi.gmail_search(self.gmail, "x", max_results=0), [])
+
+    def test_state_key_owner_case_insensitive(self):
+        self.assertEqual(gi.state_key("j", "Alice@Example.COM"), "alice@example.com:j")
+        self.assertEqual(gi.state_key("j"), "j")
+
     def test_label_ids_sent_as_repeated_params(self):
         seen = {}
 

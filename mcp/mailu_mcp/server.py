@@ -161,7 +161,8 @@ def register_gmail_tools(server: McpServer, mail_config, ctx=None) -> None:
                   "properties": {
                       "query": {"type": "string",
                                 "description": "Gmail search query, e.g. 'from:boss newer_than:30d has:attachment'"},
-                      "max_results": {"type": "integer", "default": 50},
+                      "max_results": {"type": "integer", "default": 50,
+                                        "description": "Capped at 2000 per call"},
                       "label_ids": {"type": "array", "items": {"type": "string"}},
                       **GMAIL_CRED_SCHEMA}})
     def _gsearch(args):
@@ -174,7 +175,8 @@ def register_gmail_tools(server: McpServer, mail_config, ctx=None) -> None:
                   "properties": {
                       "query": {"type": "string"},
                       "dest_mailbox": {"type": "string", "default": "INBOX"},
-                      "max_messages": {"type": "integer", "default": 100},
+                      "max_messages": {"type": "integer", "default": 100,
+                                        "description": "Capped at 2000 per job"},
                       "dry_run": {"type": "boolean", "default": False},
                       "job_name": {"type": "string", "default": "default"},
                       "label_ids": {"type": "array", "items": {"type": "string"}},

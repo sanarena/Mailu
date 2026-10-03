@@ -128,7 +128,7 @@ which now includes `MCP_HTTP_ADMIN_TOKEN`).
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 70 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 73 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 7 mail + 43 admin + 3 gmail tools
 ```
