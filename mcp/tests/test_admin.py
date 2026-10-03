@@ -101,6 +101,28 @@ class AdminTests(unittest.TestCase):
                 self.client.get_user("z@example.com")
         self.assertEqual(ctx.exception.status, 404)
 
+    def test_401_surfaces_as_mcp_error(self):
+        import json as _json
+        import io as _io
+        import os
+        import urllib.error
+
+        def denied(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 401, "unauth", {},
+                                         _io.BytesIO(b'{"message": "bad token"}'))
+
+        env = {"MAILU_API_BASE": "https://m.test/api", "MAILU_API_TOKEN": "wrong"}
+        stdin = _io.StringIO(_json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "admin_users_list", "arguments": {}}}) + "\n")
+        stdout = _io.StringIO()
+        with patch.dict(os.environ, env):
+            with patch("mcp.mailu_mcp.admin.urllib.request.urlopen", denied):
+                build_server().run(stdin, stdout)
+        resp = _json.loads(stdout.getvalue().strip())
+        self.assertTrue(resp["result"]["isError"])
+        self.assertIn("401", resp["result"]["content"][0]["text"])
+
     def test_all_admin_tools_registered(self):
         names = set(build_server().tools)
         for expected in ("admin_domains_list", "admin_domain_get",

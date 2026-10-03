@@ -181,6 +181,22 @@ class MailTests(unittest.TestCase):
                            "params": {"name": "nope", "arguments": {}}})
         self.assertIn("error", resp)
 
+    def test_connection_failure_is_mcp_error_not_crash(self):
+        def boom(*a, **kw):
+            raise OSError("unreachable")
+        stdin = io.StringIO(
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "mail_search", "arguments": {}}}) + "\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
+        stdout = io.StringIO()
+        with patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", boom):
+            build_server().run(stdin, stdout)
+        lines = stdout.getvalue().strip().splitlines()
+        self.assertEqual(len(lines), 2)  # error frame, then business as usual
+        first = json.loads(lines[0])
+        self.assertTrue(first["result"]["isError"])
+        self.assertIn("unreachable", first["result"]["content"][0]["text"])
+
     def test_mcp_rejects_batch_without_crashing(self):
         stdin = io.StringIO(json.dumps([{"jsonrpc": "2.0", "id": 1,
                                          "method": "ping"}]) + "\n"

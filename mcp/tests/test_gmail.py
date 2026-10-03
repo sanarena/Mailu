@@ -110,6 +110,56 @@ class GmailTests(unittest.TestCase):
         self.assertEqual(appended, [])
         self.assertEqual(rep["matched"], 2)
 
+    def test_search_follows_next_page(self):
+        calls = []
+
+        def fake(cfg, path, params=None):
+            calls.append(params.get("pageToken") if params else None)
+            if path == "/users/me/messages" and not (params or {}).get("pageToken"):
+                return {"messages": [{"id": "g1", "threadId": "t1"}],
+                        "nextPageToken": "p2"}
+            if path == "/users/me/messages" :
+                return {"messages": [{"id": "g2", "threadId": "t2"}]}
+            return {"id": "x", "labelIds": [], "payload": {"headers": []}, "snippet": ""}
+
+        with patch.object(gi, "_api", fake):
+            out = gi.gmail_search(self.gmail, "x", max_results=10)
+        self.assertEqual([m["id"] for m in out], ["g1", "g2"])
+        self.assertIn("p2", calls)
+
+    def test_partial_append_failure_continues_and_saves(self):
+        def appender(cfg, box, raw, flags="(\\Seen)"):
+            if raw == b"FAIL":
+                raise OSError("disk full")
+            return True
+
+        raws = {"g1": RAW, "g2": b"FAIL", "g3": RAW}
+
+        def fake(cfg, path, params=None):
+            if path == "/users/me/messages":
+                return {"messages": [{"id": "g1"}, {"id": "g2"}, {"id": "g3"}]}
+            if (params or {}).get("format") == "raw":
+                import base64 as _b
+                gid = path.rsplit("/", 1)[-1]
+                return {"raw": _b.urlsafe_b64encode(raws[gid]).decode()}
+            return {"id": "x", "labelIds": [], "payload": {"headers": []}, "snippet": ""}
+
+        with patch.object(gi, "_api", fake):
+            with patch("mcp.mailu_mcp.mail.append_message", appender):
+                job = gi.CopyJob(query="x", job_name="part", state_path=self.state)
+                rep = gi.run_copy_job(self.app, job).as_dict()
+        self.assertEqual(rep["copied"], 2)
+        self.assertEqual(rep["failed"], 1)
+        self.assertTrue(rep["errors"][0].startswith("g2:"))
+        st = gi.job_status("part", self.state)
+        self.assertEqual(sorted(st["copied_ids"]), ["g1", "g3"])
+
+    def test_corrupt_state_file_starts_empty(self):
+        with open(self.state, "w") as fh:
+            fh.write("{not json")
+        self.assertEqual(gi.load_state(self.state), {})
+        self.assertEqual(gi.job_status("nope", self.state)["copied_total"], 0)
+
     def test_oauth_required(self):
         with self.assertRaises(gi.GmailError):
             gi.ensure_access_token(GmailConfig())
