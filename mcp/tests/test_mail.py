@@ -248,6 +248,12 @@ class MailTests(unittest.TestCase):
             res = mail_mod.search_emails(cfg, mailbox="INBOX", limit=10,
                                          subject='a"b')
         finally:
+            # shutdown() wakes a thread blocked in accept() on Linux;
+            # close() alone only does on macOS.
+            try:
+                listener.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             listener.close()
             worker.join(timeout=10)
         self.assertEqual(boxes, ["INBOX", "INBOX.Archive"])
@@ -332,6 +338,12 @@ class MailTests(unittest.TestCase):
                 attachments=[{"filename": "n.txt", "content": "ZGF0YQ==",
                               "maintype": "text", "subtype": "plain"}])
         finally:
+            # shutdown() wakes a thread blocked in accept() on Linux;
+            # close() alone only does on macOS.
+            try:
+                listener.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             listener.close()
             worker.join(timeout=10)
         self.assertFalse(worker.is_alive())
