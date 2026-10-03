@@ -1,0 +1,32 @@
+# Smoke-test the MCP server inside the cluster. Needs no live Mailu:
+# initialize + tools/list + a local-only status call, results in pod logs.
+#   1. sed -i '' 's#<you>#YOUR_DOCKERHUB_USER#' mcp/k8s/test-job.yaml
+#   2. kubectl apply -f mcp/k8s/test-job.yaml
+#   3. kubectl logs -l job-name=mailu-mcp-smoke --tail=20
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mailu-mcp-smoke
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        job-name: mailu-mcp-smoke
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mcp
+          image: <you>/mailu-mcp:latest
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - |
+              printf '%s\n' \
+                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+                '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+                '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gmail_import_status","arguments":{"job_name":"smoke"}}}' \
+              | python3 -m mailu_mcp.server
