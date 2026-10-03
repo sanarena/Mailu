@@ -259,6 +259,7 @@ class MailTests(unittest.TestCase):
         self.assertTrue(selects and selects[0].endswith('"INBOX"'), seen)
         searches = [c for c in seen if "SEARCH" in c]
         self.assertTrue(searches and r'SUBJECT "a\"b"' in searches[0], seen)
+        self.assertNotIn("None", searches[0])  # charset None is skipped, not sent
         self.assertFalse(worker.is_alive())
 
     def test_send_wire_format_against_stub_smtp_server(self):
