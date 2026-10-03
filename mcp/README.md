@@ -16,7 +16,7 @@ Branches are stacked (each builds on the previous) so every branch works
 standalone; `feature/combined` is where all lanes are tested together.
 Fork: `origin` = your fork, `upstream` = `Mailu/Mailu`.
 
-## Admin tools (38)
+## Admin tools (43)
 
 Domains: `admin_domains_list`, `admin_domain_get/create/update/delete`,
 `admin_domain_dkim` (rotate DKIM/DMARC keys), managers
@@ -27,7 +27,10 @@ Users: `admin_users_list/get/create/update/delete` — every
 `UserCreate`/`UserUpdate` parameter passes through (quota, forwarding,
 autoreply, spam filter, …).
 Aliases: `admin_aliases_list/get/create/update/delete`,
-`admin_aliases_by_domain`.
+`admin_aliases_by_domain`, own anonymous aliases
+(`admin_myaliases_list/delete/update`),
+`admin_alias_domains_available`, `admin_random_alias_create`
+(SimpleLogin/Bitwarden compatible; per-user `email`+`token` auth).
 Relays: `admin_relays_list/get/create/update/delete`.
 Tokens: `admin_tokens_list/create`, `admin_tokens_of_user`,
 `admin_user_token_create`, `admin_token_get/update/delete`.
