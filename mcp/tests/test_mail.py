@@ -170,6 +170,97 @@ class MailTests(unittest.TestCase):
         m_plain.assert_not_called()
         ssl_fake.starttls.assert_not_called()
 
+    def test_wire_format_against_stub_imap_server(self):
+        """Real imaplib over TCP against a stub: validates SELECT quoting,
+        SEARCH syntax, FETCH label parsing and LIST delimiter handling."""
+        import socket
+        import threading
+
+        header = (b"From: Wire <wire@example.com>\r\nTo: me@x.io\r\n"
+                  b"Subject: sock\r\n\r\n")
+        seen = []
+        ready = threading.Event()
+
+        def handle(fh):
+            fh.write(b"* OK stub ready\r\n")
+            fh.flush()
+            while True:
+                line = fh.readline()
+                if not line:
+                    return
+                text = line.decode("latin-1").strip()
+                tag, _, rest = text.partition(" ")
+                seen.append(rest)
+                cmd = rest.split(" ")[0].upper()
+                if cmd == "CAPABILITY":
+                    fh.write(b"* CAPABILITY IMAP4rev1 UIDPLUS\r\n"
+                             + f"{tag} OK capabilities\r\n".encode())
+                elif cmd == "LOGIN":
+                    fh.write(f"{tag} OK logged in\r\n".encode())
+                elif cmd in ("SELECT", "EXAMINE"):
+                    fh.write(b"* 2 EXISTS\r\n" + f"{tag} OK selected\r\n".encode())
+                elif cmd == "LIST":
+                    fh.write(b'* LIST (\\HasNoChildren) "." "INBOX"\r\n'
+                             b'* LIST (\\HasNoChildren) "." "INBOX.Archive"\r\n'
+                             + f"{tag} OK listed\r\n".encode())
+                elif cmd == "UID" and "SEARCH" in rest.upper():
+                    fh.write(b"* SEARCH 7 8\r\n" + f"{tag} OK searched\r\n".encode())
+                elif cmd == "UID" and "FETCH" in rest.upper():
+                    label = (b"* 8 FETCH (UID 8 FLAGS (\\Seen) RFC822.SIZE "
+                             + str(len(header)).encode() + b" BODY[HEADER] {"
+                             + str(len(header)).encode() + b"}\r\n")
+                    fh.write(label + header + b")\r\n"
+                             + f"{tag} OK fetched\r\n".encode())
+                elif cmd == "LOGOUT":
+                    fh.write(b"* BYE\r\n" + f"{tag} OK bye\r\n".encode())
+                    fh.flush()
+                    return
+                else:
+                    fh.write(f"{tag} BAD unknown\r\n".encode())
+                fh.flush()
+
+        def serve(listener):
+            ready.set()
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return  # listener closed: shut down
+                with conn:
+                    try:
+                        handle(conn.makefile("rwb"))
+                    except (OSError, ValueError):
+                        pass
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        port = listener.getsockname()[1]
+        worker = threading.Thread(target=serve, args=(listener,), daemon=True)
+        worker.start()
+        ready.wait(timeout=5)
+
+        cfg = MailConfig(imap_host="127.0.0.1", imap_port=port,
+                         imap_user="u", imap_password="p", imap_ssl=False)
+        try:
+            boxes = mail_mod.list_mailboxes(cfg)
+            res = mail_mod.search_emails(cfg, mailbox="INBOX", limit=10,
+                                         subject='a"b')
+        finally:
+            listener.close()
+            worker.join(timeout=10)
+        self.assertEqual(boxes, ["INBOX", "INBOX.Archive"])
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0]["subject"], "sock")
+        self.assertIn("\\Seen", res[0]["flags"])
+        self.assertEqual(res[0]["size"], len(header))
+        selects = [c for c in seen if c.startswith("SELECT") or c.startswith("EXAMINE")]
+        self.assertTrue(selects and selects[0].endswith('"INBOX"'), seen)
+        searches = [c for c in seen if "SEARCH" in c]
+        self.assertTrue(searches and r'SUBJECT "a\"b"' in searches[0], seen)
+        self.assertFalse(worker.is_alive())
+
     def test_mcp_tools_list_and_call(self):
         stdin = io.StringIO(json.dumps({"jsonrpc": "2.0", "id": 1,
                                         "method": "tools/list"}) + "\n")
