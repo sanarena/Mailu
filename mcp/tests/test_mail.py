@@ -88,6 +88,10 @@ class MailTests(unittest.TestCase):
         self.assertIn('SINCE "01-Jan-2025"', c)
         self.assertEqual(mail_mod.build_search_criteria(), "ALL")
 
+    def test_search_values_are_escaped(self):
+        c = mail_mod.build_search_criteria(subject='say "hi" \\ bye')
+        self.assertIn(r'SUBJECT "say \"hi\" \\ bye"', c)
+
     @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", FakeIMAP)
     def test_search_parses_real_flags_and_size(self):
         cfg = MailConfig(imap_user="u", imap_password="p")

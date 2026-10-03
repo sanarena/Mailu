@@ -36,7 +36,9 @@ class AdminClient:
 
     def _request(self, method: str, path: str,
                  body: Optional[Dict[str, Any]] = None) -> Any:
-        url = f"{self.cfg.base_url}/v1/{path.lstrip('/')}"
+        quoted = "/".join(urllib.parse.quote(seg, safe="@._-")
+                          for seg in path.lstrip("/").split("/"))
+        url = f"{self.cfg.base_url}/v1/{quoted}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         req.add_header("Authorization", f"Bearer {self.cfg.api_token}")

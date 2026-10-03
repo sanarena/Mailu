@@ -84,6 +84,11 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(captured["method"], "DELETE")
         self.assertTrue(captured["url"].endswith("/v1/alias/x@example.com"))
 
+    @patch("mcp.mailu_mcp.admin.urllib.request.urlopen", fake_urlopen)
+    def test_plus_address_path_is_quoted(self):
+        self.client.get_alias("a+b@example.com")
+        self.assertTrue(captured["url"].endswith("/v1/alias/a%2Bb@example.com"))
+
     def test_http_error_surfaces(self):
         import urllib.error
 

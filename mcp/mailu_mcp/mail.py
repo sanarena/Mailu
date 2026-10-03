@@ -27,6 +27,11 @@ def _decode(value: Any) -> str:
     return "".join(parts)
 
 
+def _escape(value: str) -> str:
+    """Escape a value for use inside an IMAP quoted-string."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def build_search_criteria(
     unseen_only: bool = False,
     seen: Optional[bool] = None,
@@ -58,23 +63,23 @@ def build_search_criteria(
     elif flagged is False:
         crit.append("UNFLAGGED")
     if since:
-        crit.append(f'SINCE "{since}"')
+        crit.append(f'SINCE "{_escape(since)}"')
     if before:
-        crit.append(f'BEFORE "{before}"')
+        crit.append(f'BEFORE "{_escape(before)}"')
     if from_:
-        crit.append(f'FROM "{from_}"')
+        crit.append(f'FROM "{_escape(from_)}"')
     if to:
-        crit.append(f'TO "{to}"')
+        crit.append(f'TO "{_escape(to)}"')
     if cc:
-        crit.append(f'CC "{cc}"')
+        crit.append(f'CC "{_escape(cc)}"')
     if subject:
-        crit.append(f'SUBJECT "{subject}"')
+        crit.append(f'SUBJECT "{_escape(subject)}"')
     if body:
-        crit.append(f'BODY "{body}"')
+        crit.append(f'BODY "{_escape(body)}"')
     if text:
-        crit.append(f'TEXT "{text}"')
+        crit.append(f'TEXT "{_escape(text)}"')
     if header and header_value:
-        crit.append(f'HEADER "{header}" "{header_value}"')
+        crit.append(f'HEADER "{_escape(header)}" "{_escape(header_value)}"')
     if larger is not None:
         crit.append(f"LARGER {int(larger)}")
     if smaller is not None:
