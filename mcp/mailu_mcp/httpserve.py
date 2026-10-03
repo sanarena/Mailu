@@ -4,34 +4,137 @@ JSON-RPC 2.0 over ``POST /mcp`` (one message per request, like the stdio
 framing but over HTTP), plus an unauthenticated ``GET /healthz`` for load
 balancer probes.
 
-Public-exposure hardening:
-  * Bearer-token auth on every ``/mcp`` call, compared in constant time.
-    The server refuses to start without ``MCP_HTTP_TOKEN``.
-  * Request bodies capped (``MCP_HTTP_MAX_BODY``, default 1 MiB) → 413.
-  * Binds 127.0.0.1 by default; override with ``MCP_HTTP_HOST`` for
-    containers / load balancers. Always terminate TLS at the load
-    balancer — this server speaks plain HTTP.
+Isolation model (this is what keeps user A from seeing user B's mail):
+  * ``mail_*`` tools require HTTP Basic auth with the caller's own Mailu
+    credentials (``email:password`` or ``email:app-token``). Every request
+    builds its IMAP/SMTP session from those credentials, so Dovecot and
+    Postfix — not our code — enforce the boundary. There is no shared
+    mailbox identity in HTTP mode.
+  * ``admin_*`` and ``gmail_*`` tools require the operator Bearer token
+    (``MCP_HTTP_ADMIN_TOKEN``). They touch the global admin API and the
+    operator's Gmail account, so ordinary users get 403.
+  * The operator token may also call ``mail_*`` tools, which then use the
+    single server-configured mailbox (``MAILU_IMAP_*``) — one explicit
+    identity, never another user's.
+  * ``tools/list`` is filtered by role: users only see ``mail_*`` tools.
+
+Brute-force braking: failed authentications are counted per client IP
+(``X-Forwarded-For``-aware) plus a global bucket; over-threshold clients
+get 429. Always terminate TLS at the load balancer — this server speaks
+plain HTTP.
 """
+import base64
+import binascii
 import hmac
 import json
+import threading
+import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
+from .config import MailConfig, load_config
 from .protocol import McpServer
+
+USER_TOOLS_PREFIX = "mail_"
+ADMIN_TOOL_PREFIXES = ("admin_", "gmail_")
+
+
+def parse_auth(authorization: Optional[str], admin_token: str
+               ) -> Tuple[str, Optional[Dict[str, str]]]:
+    """Classify credentials. Returns ("user", {"email","secret"}),
+    ("admin", None), ("missing", None) or ("invalid", None)."""
+    if not authorization:
+        return "missing", None
+    scheme, _, presented = authorization.partition(" ")
+    if scheme.lower() == "bearer":
+        if admin_token and hmac.compare_digest(presented.strip(), admin_token):
+            return "admin", None
+        return "invalid", None
+    if scheme.lower() == "basic":
+        try:
+            decoded = base64.b64decode(presented.strip(), validate=True).decode("utf-8")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            return "invalid", None
+        email, sep, secret = decoded.partition(":")
+        if not sep or not email or not secret:
+            return "invalid", None
+        return "user", {"email": email, "secret": secret}
+    return "invalid", None
 
 
 def check_auth(authorization: Optional[str], token: str) -> bool:
-    """True when ``Authorization: Bearer <token>`` matches (constant time)."""
-    if not authorization or not token:
-        return False
-    scheme, _, presented = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not presented:
-        return False
-    return hmac.compare_digest(presented.strip(), token)
+    """Legacy single-token check (admin Bearer only)."""
+    role, _ = parse_auth(authorization, token)
+    return role == "admin"
 
 
-def make_handler(server: McpServer, token: str, max_body: int):
-    """Build a request-handler class bound to one MCP server + token."""
+class RateLimiter:
+    """Failed-auth buckets: per-IP plus a global cap (thread-safe)."""
+
+    def __init__(self, max_failures: int = 20, window: float = 600.0,
+                 global_max: int = 500):
+        self.max_failures = max_failures
+        self.window = window
+        self.global_max = global_max
+        self._lock = threading.Lock()
+        self._per_ip: Dict[str, deque] = {}
+        self._global: deque = deque()
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window
+        while self._global and self._global[0] < cutoff:
+            self._global.popleft()
+        for ip in list(self._per_ip):
+            bucket = self._per_ip[ip]
+            while bucket and bucket[0] < cutoff:
+                bucket.popleft()
+            if not bucket:
+                del self._per_ip[ip]
+
+    def blocked(self, ip: str) -> bool:
+        with self._lock:
+            self._prune(time.monotonic())
+            bucket = self._per_ip.get(ip)
+            if bucket is not None and len(bucket) >= self.max_failures:
+                return True
+            return len(self._global) >= self.global_max
+
+    def failed(self, ip: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._prune(now)
+            self._per_ip.setdefault(ip, deque()).append(now)
+            self._global.append(now)
+
+
+def user_mail_config(identity: Dict[str, str]) -> MailConfig:
+    """Per-request mailbox config: server hosts, caller identity.
+
+   Host/port/TLS come from the server environment (one Mailu for all
+    callers); user, secret and default sender come from HTTP Basic auth,
+    so replies and sends can never default to someone else's address.
+    """
+    base = load_config().mail
+    return MailConfig(
+        imap_host=base.imap_host, imap_port=base.imap_port,
+        imap_user=identity["email"], imap_password=identity["secret"],
+        imap_ssl=base.imap_ssl, smtp_host=base.smtp_host,
+        smtp_port=base.smtp_port, smtp_user=identity["email"],
+        smtp_password=identity["secret"], smtp_starttls=base.smtp_starttls,
+        default_from=identity["email"],
+    )
+
+
+def make_handler(server_factory, admin_token: str, max_body: int,
+                 rate_limiter: Optional[RateLimiter] = None):
+    """Build a handler class.
+
+    ``server_factory`` is ``build_server`` (takes optional per-request
+    ``MailConfig``); a fresh server is built per request so no mailbox
+    identity is ever shared between callers.
+    """
+    limiter = rate_limiter or RateLimiter()
 
     class McpHttpHandler(BaseHTTPRequestHandler):
         server_version = "MailuMCP/1.0"
@@ -39,6 +142,12 @@ def make_handler(server: McpServer, token: str, max_body: int):
         def log_message(self, fmt, *args):  # one line per request on stderr
             import sys
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+        def _client_ip(self) -> str:
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+            return self.client_address[0]
 
         def _send_json(self, status: int, payload, extra: Optional[dict] = None):
             body = json.dumps(payload).encode()
@@ -50,65 +159,73 @@ def make_handler(server: McpServer, token: str, max_body: int):
             self.end_headers()
             self.wfile.write(body)
 
-        def _require_auth(self) -> bool:
-            if check_auth(self.headers.get("Authorization"), token):
-                return True
-            if not self.headers.get("Authorization"):
-                self._send_json(401, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32001,
-                                                "message": "Missing Authorization header"}},
-                                {"WWW-Authenticate": "Bearer"})
-            else:
-                self._send_json(403, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32002,
-                                                "message": "Invalid Bearer token"}})
-            return False
+        def _rpc_error(self, status: int, code: int, message: str,
+                       extra: Optional[dict] = None, msg_id: Any = None):
+            self._send_json(status, {"jsonrpc": "2.0", "id": msg_id,
+                                     "error": {"code": code, "message": message}},
+                             extra)
 
         def do_GET(self):
             if self.path.split("?", 1)[0] == "/healthz":
+                probe = server_factory()
                 self._send_json(200, {"status": "ok",
-                                      "server": server.name,
-                                      "version": server.version,
-                                      "tools": len(server.tools)})
+                                      "server": probe.name,
+                                      "version": probe.version,
+                                      "tools": len(probe.tools)})
             else:
-                self._send_json(404, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32000,
-                                                "message": "Not found"}})
+                self._rpc_error(404, -32000, "Not found")
 
         def do_POST(self):
             if self.path.split("?", 1)[0] != "/mcp":
-                self._send_json(404, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32000,
-                                                "message": "Not found"}})
+                self._rpc_error(404, -32000, "Not found")
                 return
-            if not self._require_auth():
+            ip = self._client_ip()
+            if limiter.blocked(ip):
+                self._rpc_error(429, -32003, "Too many failed attempts; slow down",
+                                {"Retry-After": "60"})
+                return
+            role, identity = parse_auth(self.headers.get("Authorization"), admin_token)
+            if role == "missing":
+                limiter.failed(ip)
+                self._rpc_error(401, -32001, "Missing Authorization header",
+                                {"WWW-Authenticate": 'Basic realm="mailu-mcp", Bearer'})
+                return
+            if role == "invalid":
+                limiter.failed(ip)
+                self._rpc_error(403, -32002, "Invalid credentials")
                 return
             try:
                 length = int(self.headers.get("Content-Length", ""))
             except ValueError:
                 length = -1
             if length < 0:
-                self._send_json(411, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32600,
-                                                "message": "Content-Length required"}})
+                self._rpc_error(411, -32600, "Content-Length required")
                 return
             if length > max_body:
-                self._send_json(413, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32600,
-                                                "message": f"Body exceeds {max_body} bytes"}})
+                self._rpc_error(413, -32600, f"Body exceeds {max_body} bytes")
                 return
             try:
                 msg = json.loads(self.rfile.read(length).decode("utf-8"))
             except (ValueError, UnicodeDecodeError) as exc:
-                self._send_json(400, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32700,
-                                                "message": f"Parse error: {exc}"}})
+                self._rpc_error(400, -32700, f"Parse error: {exc}")
                 return
             if not isinstance(msg, dict):
-                self._send_json(400, {"jsonrpc": "2.0", "id": None,
-                                      "error": {"code": -32600,
-                                                "message": "Invalid Request: batch not supported"}})
+                self._rpc_error(400, -32600, "Invalid Request: batch not supported")
                 return
+            method = msg.get("method", "")
+            params = msg.get("params") or {}
+            if role == "user":
+                server = server_factory(user_mail_config(identity))
+                if method == "tools/call":
+                    name = params.get("name", "")
+                    if not name.startswith(USER_TOOLS_PREFIX):
+                        limiter.failed(ip)
+                        self._rpc_error(403, -32002,
+                                              f"Tool {name!r} requires operator access",
+                                              msg_id=msg.get("id"))
+                        return
+            else:
+                server = server_factory()
             try:
                 resp = server.handle(msg)
             except Exception as exc:
@@ -120,21 +237,36 @@ def make_handler(server: McpServer, token: str, max_body: int):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+            if method == "tools/list" and role == "user":
+                tools = resp.get("result", {}).get("tools", [])
+                resp["result"]["tools"] = [t for t in tools
+                                           if t.get("name", "").startswith(USER_TOOLS_PREFIX)]
             self._send_json(200, resp)
 
     return McpHttpHandler
 
 
-def serve_http(server: McpServer, host: str, port: int, token: str,
+def serve_http(server_or_factory, host: str, port: int, token: str,
                max_body: int = 1024 * 1024) -> None:
-    """Serve forever on HTTP. Refuses to start without an auth token."""
+    """Serve forever on HTTP. Refuses to start without an admin token.
+
+    Accepts a server factory (``build_server``) or, for tests, a ready
+    ``McpServer`` instance (used as-is; per-request identity then only
+    applies to role gating, not mailbox config).
+    """
     if not token:
-        raise ValueError("Refusing to serve public HTTP without MCP_HTTP_TOKEN: "
+        raise ValueError("Refusing to serve public HTTP without MCP_HTTP_ADMIN_TOKEN: "
                          "set a long random Bearer token first")
-    httpd = ThreadingHTTPServer((host, port), make_handler(server, token, max_body))
+    if isinstance(server_or_factory, McpServer):
+        ready = server_or_factory
+        factory = lambda mail_config=None: ready  # noqa: E731
+    else:
+        factory = server_or_factory
+    httpd = ThreadingHTTPServer((host, port), make_handler(factory, token, max_body))
     httpd.daemon_threads = True
+    probe = factory()
     print(f"mailu-mcp: HTTP listening on http://{host}:{httpd.server_port}/mcp "
-          f"({len(server.tools)} tools; health at /healthz)", flush=True)
+          f"({len(probe.tools)} tools; health at /healthz)", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

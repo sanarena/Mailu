@@ -88,7 +88,7 @@ class AppConfig:
         http = HttpConfig(
             host=os.getenv("MCP_HTTP_HOST", "127.0.0.1"),
             port=_int("MCP_HTTP_PORT", 8000),
-            token=os.getenv("MCP_HTTP_TOKEN", ""),
+            token=os.getenv("MCP_HTTP_ADMIN_TOKEN", ""),
             max_body=_int("MCP_HTTP_MAX_BODY", 1024 * 1024),
         )
         return cls(mail=mail, admin=admin, gmail=gmail, http=http)

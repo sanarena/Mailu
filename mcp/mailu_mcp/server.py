@@ -17,10 +17,15 @@ SERVER_NAME = "mailu"
 SERVER_VERSION = "0.4.0"
 
 
-def build_server() -> McpServer:
+def build_server(mail_config=None) -> McpServer:
+    """Build the full tool registry.
+
+    ``mail_config`` overrides the mailbox identity (used per HTTP request
+    so each Basic-auth caller gets their own IMAP/SMTP session); when
+    omitted, the server environment identity is used (stdio / operator).
+    """
     server = McpServer(SERVER_NAME, SERVER_VERSION)
-    cfg = load_config()
-    m = cfg.mail
+    m = mail_config if mail_config is not None else load_config().mail
 
     @server.tool("mail_search", "Search a Mailu mailbox (IMAP SEARCH with friendly filters).",
                  {"type": "object",

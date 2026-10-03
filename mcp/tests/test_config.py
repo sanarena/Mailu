@@ -42,7 +42,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.http.token, "")
         self.assertEqual(cfg.http.max_body, 1024 * 1024)
         env = {"MCP_HTTP_HOST": "0.0.0.0", "MCP_HTTP_PORT": "9000",
-               "MCP_HTTP_TOKEN": "s3cret"}
+               "MCP_HTTP_ADMIN_TOKEN": "s3cret"}
         with patch.dict(os.environ, env, clear=True):
             cfg = load_config()
         self.assertEqual(cfg.http.host, "0.0.0.0")

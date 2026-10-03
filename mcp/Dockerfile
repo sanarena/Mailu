@@ -17,5 +17,5 @@ ENV PYTHONPATH=/app \
 EXPOSE 8000
 
 # Default: MCP over stdio. For HTTP behind a load balancer:
-#   docker run -e MCP_HTTP_TOKEN=... -p 8000:8000 <img> --http --host 0.0.0.0
+#   docker run -e MCP_HTTP_ADMIN_TOKEN=... -p 8000:8000 <img> --http --host 0.0.0.0
 ENTRYPOINT ["python3", "-m", "mailu_mcp.server"]

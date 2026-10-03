@@ -1,6 +1,6 @@
 # Long-lived MCP server behind a public load balancer.
 # Needs: image pushed, mcp/k8s/secret.yaml applied (Mailu creds +
-# MCP_HTTP_TOKEN). Single replica: Gmail import state is a local file,
+# MCP_HTTP_ADMIN_TOKEN). Single replica: Gmail import state is a local file,
 # so copies must not run on two pods at once.
 #   kubectl apply -f mcp/k8s/secret.yaml
 #   kubectl apply -f mcp/k8s/deployment.yaml -f mcp/k8s/service.yaml
