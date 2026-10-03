@@ -261,6 +261,91 @@ class MailTests(unittest.TestCase):
         self.assertTrue(searches and r'SUBJECT "a\"b"' in searches[0], seen)
         self.assertFalse(worker.is_alive())
 
+    def test_send_wire_format_against_stub_smtp_server(self):
+        """Real smtplib over TCP: envelope has to+cc+bcc, headers omit Bcc,
+        attachment survives the wire."""
+        import socket
+        import threading
+
+        transcript = []
+        data_lines = []
+        ready = threading.Event()
+
+        def handle(fh):
+            fh.write(b"220 stub ESMTP\r\n")
+            fh.flush()
+            while True:
+                line = fh.readline()
+                if not line:
+                    return
+                text = line.decode("latin-1").rstrip("\r\n")
+                verb = text.split(" ")[0].upper() if text else ""
+                transcript.append(text)
+                if verb in ("EHLO", "HELO"):
+                    fh.write(b"250-stub\r\n250 OK\r\n")
+                elif verb == "DATA":
+                    fh.write(b"354 end with .\r\n")
+                    fh.flush()
+                    while True:
+                        chunk = fh.readline().decode("latin-1")
+                        if chunk in (".\r\n", ".\n"):
+                            break
+                        data_lines.append(chunk)
+                    fh.write(b"250 queued\r\n")
+                elif verb == "QUIT":
+                    fh.write(b"221 bye\r\n")
+                    fh.flush()
+                    return
+                else:
+                    fh.write(b"250 OK\r\n")
+                fh.flush()
+
+        def serve(listener):
+            ready.set()
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                with conn:
+                    try:
+                        handle(conn.makefile("rwb"))
+                    except (OSError, ValueError):
+                        pass
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        port = listener.getsockname()[1]
+        worker = threading.Thread(target=serve, args=(listener,), daemon=True)
+        worker.start()
+        ready.wait(timeout=5)
+
+        cfg = MailConfig(smtp_host="127.0.0.1", smtp_port=port,
+                         smtp_starttls=False, default_from="me@x.io")
+        try:
+            out = mail_mod.send_email(
+                cfg, to=["a@x.io"], cc=["c@x.io"], bcc=["hidden@x.io"],
+                subject="wire", body_text="hello",
+                attachments=[{"filename": "n.txt", "content": "ZGF0YQ==",
+                              "maintype": "text", "subtype": "plain"}])
+        finally:
+            listener.close()
+            worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
+        rcpts = sorted(t.split(":", 1)[1].strip("<> ")
+                       for t in transcript if t.upper().startswith("RCPT TO"))
+        self.assertEqual(rcpts, ["a@x.io", "c@x.io", "hidden@x.io"])
+        blob = "".join(data_lines)
+        self.assertIn("Subject: wire", blob)
+        self.assertIn("Cc: c@x.io", blob)
+        self.assertNotIn("hidden@x.io", blob)
+        self.assertIn('filename="n.txt"', blob)
+        self.assertIn("ZGF0YQ==", blob)
+        self.assertTrue(out["message_id"])
+        self.assertIn("@x.io>", out["message_id"])
+
     def test_mcp_tools_list_and_call(self):
         stdin = io.StringIO(json.dumps({"jsonrpc": "2.0", "id": 1,
                                         "method": "tools/list"}) + "\n")

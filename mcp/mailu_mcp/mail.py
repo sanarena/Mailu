@@ -325,6 +325,10 @@ def send_email(
     for k, v in (extra_headers or {}).items():
         msg[k] = v
     msg["Subject"] = subject
+    if "Message-ID" not in msg:
+        from email.utils import make_msgid
+        domain = sender.rsplit("@", 1)[-1] if "@" in sender else None
+        msg["Message-ID"] = make_msgid(domain=domain)
     if body_html:
         msg.set_content(body_text or "")
         msg.add_alternative(body_html, subtype="html")
