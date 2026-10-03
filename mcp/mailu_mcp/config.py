@@ -3,6 +3,16 @@ import os
 from dataclasses import dataclass, field
 
 
+def _int(name: str, default: int) -> int:
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"Environment variable {name}={raw!r} is not an integer")
+
+
 @dataclass
 class MailConfig:
     imap_host: str = "localhost"
@@ -44,12 +54,12 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         mail = MailConfig(
             imap_host=os.getenv("MAILU_IMAP_HOST", "localhost"),
-            imap_port=int(os.getenv("MAILU_IMAP_PORT", "993")),
+            imap_port=_int("MAILU_IMAP_PORT", 993),
             imap_user=os.getenv("MAILU_IMAP_USER", ""),
             imap_password=os.getenv("MAILU_IMAP_PASSWORD", ""),
             imap_ssl=os.getenv("MAILU_IMAP_SSL", "true").lower() not in ("0", "false", "no"),
             smtp_host=os.getenv("MAILU_SMTP_HOST", "localhost"),
-            smtp_port=int(os.getenv("MAILU_SMTP_PORT", "587")),
+            smtp_port=_int("MAILU_SMTP_PORT", 587),
             smtp_user=os.getenv("MAILU_SMTP_USER", ""),
             smtp_password=os.getenv("MAILU_SMTP_PASSWORD", ""),
             smtp_starttls=os.getenv("MAILU_SMTP_STARTTLS", "true").lower() not in ("0", "false", "no"),
@@ -58,7 +68,7 @@ class AppConfig:
         admin = AdminConfig(
             base_url=os.getenv("MAILU_API_BASE", "https://localhost/api").rstrip("/"),
             api_token=os.getenv("MAILU_API_TOKEN", ""),
-            timeout=int(os.getenv("MAILU_API_TIMEOUT", "30")),
+            timeout=_int("MAILU_API_TIMEOUT", 30),
         )
         gmail = GmailConfig(
             client_id=os.getenv("GMAIL_CLIENT_ID", ""),

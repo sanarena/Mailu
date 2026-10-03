@@ -88,6 +88,12 @@ class MailTests(unittest.TestCase):
         self.assertIn('SINCE "01-Jan-2025"', c)
         self.assertEqual(mail_mod.build_search_criteria(), "ALL")
 
+    def test_rfc2047_subject_decoded(self):
+        raw = (b"From: a@x.io\r\n"
+               b"Subject: =?UTF-8?B?SMO2c2Ugw7Zmw7ZsZQ==?=\r\n\r\nx\r\n")
+        out = mail_mod._message_to_dict(1, raw, False, 0)
+        self.assertEqual(out["subject"], "Höse öföle")
+
     def test_search_values_are_escaped(self):
         c = mail_mod.build_search_criteria(subject='say "hi" \\ bye')
         self.assertIn(r'SUBJECT "say \"hi\" \\ bye"', c)
