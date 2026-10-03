@@ -16,6 +16,7 @@ set without copying anything.
 import base64
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -216,11 +217,17 @@ def run_copy_job(app: AppConfig, job: CopyJob) -> CopyReport:
             raw = gmail_fetch_raw(app.gmail, gid)
             if not mail_mod.append_message(app.mail, job.dest_mailbox, raw):
                 raise RuntimeError(f"IMAP APPEND to {job.dest_mailbox} failed")
-            if job.mark_source_read:
-                gmail_mark_read(app.gmail, gid)
+            # Record the copy BEFORE the optional mark-read: the bytes are
+            # safe in Mailu even if flagging the Gmail original fails, and
+            # the next run must not copy it a second time.
             done.add(gid)
             report.copied += 1
             report.copied_ids.append(gid)
+            if job.mark_source_read:
+                try:
+                    gmail_mark_read(app.gmail, gid)
+                except Exception as exc:
+                    report.errors.append(f"{gid}: copied, but mark-read failed: {exc}")
         except Exception as exc:
             report.failed += 1
             report.errors.append(f"{gid}: {exc}")

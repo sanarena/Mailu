@@ -160,6 +160,39 @@ class GmailTests(unittest.TestCase):
         self.assertEqual(gi.load_state(self.state), {})
         self.assertEqual(gi.job_status("nope", self.state)["copied_total"], 0)
 
+    def test_mark_read_failure_keeps_copy_and_records(self):
+        def fake(cfg, path, params=None):
+            if path == "/users/me/messages":
+                return {"messages": [{"id": "g1"}]}
+            if (params or {}).get("format") == "raw":
+                return {"raw": _raw_b64()}
+            return {"id": "g1", "labelIds": [], "payload": {"headers": []}, "snippet": ""}
+
+        with patch.object(gi, "_api", fake):
+            with patch("mcp.mailu_mcp.mail.append_message", lambda *a, **k: True):
+                with patch.object(gi, "gmail_mark_read",
+                                  side_effect=OSError("gmail down")):
+                    job = gi.CopyJob(query="x", job_name="mr",
+                                     mark_source_read=True, state_path=self.state)
+                    rep = gi.run_copy_job(self.app, job).as_dict()
+        self.assertEqual(rep["copied"], 1)
+        self.assertEqual(rep["failed"], 0)
+        self.assertEqual(len(rep["errors"]), 1)
+        self.assertIn("mark-read failed", rep["errors"][0])
+        # recorded as done: no duplicate on re-run
+        self.assertEqual(gi.job_status("mr", self.state)["copied_total"], 1)
+
+    def test_mark_read_http_error_maps_to_gmail_error(self):
+        import io as _io
+        import urllib.error as _ue
+
+        def boom(req, timeout=None):
+            raise _ue.HTTPError(req.full_url, 500, "srv", {}, _io.BytesIO(b"x"))
+
+        with patch("mcp.mailu_mcp.gmail_import.urllib.request.urlopen", boom):
+            with self.assertRaises(gi.GmailError):
+                gi.gmail_mark_read(self.gmail, "g1")
+
     def test_oauth_required(self):
         with self.assertRaises(gi.GmailError):
             gi.ensure_access_token(GmailConfig())
