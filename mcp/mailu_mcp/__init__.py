@@ -1,4 +1,4 @@
-"""Mailu MCP: mail + admin + Gmail import. Branch: feature/gmail-import."""
+"""Mailu MCP: mail + admin + Gmail import. Branch: feature/combined."""
 from . import gmail_import
 from .admin import AdminClient, AdminError
 from .mail import (
@@ -13,7 +13,7 @@ from .mail import (
     set_flags,
 )
 from .config import load_config
-from .server import build_server, register_admin_tools
+from .server import build_server, register_admin_tools, register_gmail_tools
 
 __all__ = [
     "AdminClient",
@@ -30,4 +30,5 @@ __all__ = [
     "load_config",
     "build_server",
     "register_admin_tools",
+    "register_gmail_tools",
 ]
