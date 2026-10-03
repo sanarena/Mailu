@@ -17,15 +17,16 @@ SERVER_NAME = "mailu"
 SERVER_VERSION = "0.4.0"
 
 
-def build_server(mail_config=None) -> McpServer:
+def build_server(ctx=None) -> McpServer:
     """Build the full tool registry.
 
-    ``mail_config`` overrides the mailbox identity (used per HTTP request
-    so each Basic-auth caller gets their own IMAP/SMTP session); when
-    omitted, the server environment identity is used (stdio / operator).
+    ``ctx`` (RequestContext, HTTP mode) carries the caller's mailbox
+    identity so each Basic-auth user gets their own IMAP/SMTP session and
+    their own Gmail-import namespace; when omitted, the server environment
+    identity is used (stdio / operator).
     """
     server = McpServer(SERVER_NAME, SERVER_VERSION)
-    m = mail_config if mail_config is not None else load_config().mail
+    m = ctx.mail_config if ctx and ctx.mail_config is not None else load_config().mail
 
     @server.tool("mail_search", "Search a Mailu mailbox (IMAP SEARCH with friendly filters).",
                  {"type": "object",
@@ -114,12 +115,46 @@ def build_server(mail_config=None) -> McpServer:
                                               args.get("expunge", True))}
 
     register_admin_tools(server)
-    register_gmail_tools(server)
+    register_gmail_tools(server, m, ctx)
     return server
 
 
-def register_gmail_tools(server: McpServer) -> None:
-    """Register Gmail search + copy-job tools."""
+GMAIL_CRED_SCHEMA = {
+    "gmail_access_token": {"type": "string",
+                           "description": "Your own Gmail OAuth access token (preferred per-call credential)"},
+    "gmail_client_id": {"type": "string"},
+    "gmail_client_secret": {"type": "string"},
+    "gmail_refresh_token": {"type": "string",
+                            "description": "OAuth refresh set; must come with its own client_id + client_secret"},
+}
+
+
+def register_gmail_tools(server: McpServer, mail_config, ctx=None) -> None:
+    """Register Gmail search + copy-job tools.
+
+    Gmail credentials resolve per call: any ``gmail_*`` credential argument
+    selects a caller-supplied set (all-or-nothing — a refresh token only
+    works with the OAuth client that issued it); otherwise the server
+    environment set is used, except for HTTP users, who must always bring
+    their own so they can never touch the operator's Gmail. Copy jobs land
+    in the caller's own mailbox and state is namespaced per owner.
+    """
+    owner = ctx.email if ctx and ctx.role == "user" else ""
+    allow_server = ctx.allow_server_gmail if ctx else True
+
+    def _gmail_cfg(args):
+        from .config import GmailConfig
+        if any(args.get(k) for k in GMAIL_CRED_SCHEMA):
+            return GmailConfig(
+                access_token=args.get("gmail_access_token", ""),
+                client_id=args.get("gmail_client_id", ""),
+                client_secret=args.get("gmail_client_secret", ""),
+                refresh_token=args.get("gmail_refresh_token", ""))
+        if allow_server:
+            return load_config().gmail
+        raise gmail_mod.GmailError(
+            "No Gmail credentials: pass gmail_access_token (or gmail_client_id + "
+            "gmail_client_secret + gmail_refresh_token) with every call")
 
     @server.tool("gmail_search", "Run a Gmail search query, return matching message metadata.",
                  {"type": "object", "required": ["query"],
@@ -127,14 +162,14 @@ def register_gmail_tools(server: McpServer) -> None:
                       "query": {"type": "string",
                                 "description": "Gmail search query, e.g. 'from:boss newer_than:30d has:attachment'"},
                       "max_results": {"type": "integer", "default": 50},
-                      "label_ids": {"type": "array", "items": {"type": "string"}}}})
+                      "label_ids": {"type": "array", "items": {"type": "string"}},
+                      **GMAIL_CRED_SCHEMA}})
     def _gsearch(args):
-        cfg = load_config()
-        return gmail_mod.gmail_search(cfg.gmail, args["query"],
+        return gmail_mod.gmail_search(_gmail_cfg(args), args["query"],
                                       args.get("max_results", 50),
                                       args.get("label_ids"))
 
-    @server.tool("gmail_import_run", "Copy job: search Gmail by query, APPEND every match verbatim to a Mailu mailbox.",
+    @server.tool("gmail_import_run", "Copy job: search Gmail by query, APPEND every match verbatim to your Mailu mailbox.",
                  {"type": "object", "required": ["query"],
                   "properties": {
                       "query": {"type": "string"},
@@ -144,9 +179,13 @@ def register_gmail_tools(server: McpServer) -> None:
                       "job_name": {"type": "string", "default": "default"},
                       "label_ids": {"type": "array", "items": {"type": "string"}},
                       "mark_source_read": {"type": "boolean", "default": False},
-                      "skip_existing": {"type": "boolean", "default": True}}})
+                      "skip_existing": {"type": "boolean", "default": True},
+                      **GMAIL_CRED_SCHEMA}})
     def _grun(args):
-        app = load_config()
+        from .config import AppConfig
+        base = load_config()
+        app = AppConfig(mail=mail_config, admin=base.admin,
+                        gmail=_gmail_cfg(args), http=base.http)
         job = gmail_mod.CopyJob(query=args["query"],
                                 dest_mailbox=args.get("dest_mailbox", "INBOX"),
                                 max_messages=args.get("max_messages", 100),
@@ -154,14 +193,16 @@ def register_gmail_tools(server: McpServer) -> None:
                                 job_name=args.get("job_name", "default"),
                                 label_ids=args.get("label_ids"),
                                 mark_source_read=args.get("mark_source_read", False),
-                                skip_existing=args.get("skip_existing", True))
+                                skip_existing=args.get("skip_existing", True),
+                                owner=owner)
         return gmail_mod.run_copy_job(app, job).as_dict()
 
-    @server.tool("gmail_import_status", "Show copy-job state: how many Gmail IDs already copied.",
+    @server.tool("gmail_import_status", "Show your copy-job state: how many Gmail IDs already copied.",
                  {"type": "object",
                   "properties": {"job_name": {"type": "string", "default": "default"}}})
     def _gstatus(args):
-        return gmail_mod.job_status(args.get("job_name", "default"))
+        return gmail_mod.job_status(args.get("job_name", "default"),
+                                    owner=owner)
 
 
 def register_admin_tools(server: McpServer) -> None:
@@ -258,14 +299,15 @@ def main(argv=None) -> None:
     ap.add_argument("--port", type=int, default=None,
                     help="HTTP port (default: MCP_HTTP_PORT or 8000)")
     args = ap.parse_args(argv)
-    server = build_server()
     if args.http:
         from .httpserve import serve_http
         cfg = load_config().http
-        serve_http(server, args.host or cfg.host, args.port or cfg.port,
+        # Pass the factory, not an instance: each HTTP request needs a
+        # server built for its own RequestContext (caller identity).
+        serve_http(build_server, args.host or cfg.host, args.port or cfg.port,
                    cfg.token, cfg.max_body)
     else:
-        server.run()
+        build_server().run()
 
 
 if __name__ == "__main__":

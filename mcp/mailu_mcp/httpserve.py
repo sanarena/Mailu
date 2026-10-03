@@ -5,18 +5,21 @@ framing but over HTTP), plus an unauthenticated ``GET /healthz`` for load
 balancer probes.
 
 Isolation model (this is what keeps user A from seeing user B's mail):
-  * ``mail_*`` tools require HTTP Basic auth with the caller's own Mailu
-    credentials (``email:password`` or ``email:app-token``). Every request
-    builds its IMAP/SMTP session from those credentials, so Dovecot and
-    Postfix — not our code — enforce the boundary. There is no shared
-    mailbox identity in HTTP mode.
-  * ``admin_*`` and ``gmail_*`` tools require the operator Bearer token
-    (``MCP_HTTP_ADMIN_TOKEN``). They touch the global admin API and the
-    operator's Gmail account, so ordinary users get 403.
-  * The operator token may also call ``mail_*`` tools, which then use the
-    single server-configured mailbox (``MAILU_IMAP_*``) — one explicit
-    identity, never another user's.
-  * ``tools/list`` is filtered by role: users only see ``mail_*`` tools.
+  * ``mail_*`` and ``gmail_*`` tools require HTTP Basic auth with the
+    caller's own Mailu credentials (``email:password`` or
+    ``email:app-token``). Every request builds its IMAP/SMTP session from
+    those credentials, so Dovecot and Postfix — not our code — enforce the
+    boundary. There is no shared mailbox identity in HTTP mode.
+  * Gmail import is per account too: callers pass their own Gmail OAuth
+    credentials with each call (never the operator's), copies land in
+    their own mailbox, and job state is namespaced per owner.
+  * ``admin_*`` tools require the operator Bearer token
+    (``MCP_HTTP_ADMIN_TOKEN``) — they touch the global admin API, so
+    ordinary users get 403.
+  * The operator token may also call ``mail_*``/``gmail_*`` tools, which
+    then use the single server-configured mailbox (``MAILU_IMAP_*``) and
+    Gmail account — one explicit identity, never another user's.
+  * ``tools/list`` is filtered by role: users see ``mail_*`` + ``gmail_*``.
 
 Brute-force braking: failed authentications are counted per client IP
 (``X-Forwarded-For``-aware) plus a global bucket; over-threshold clients
@@ -34,10 +37,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 
 from .config import MailConfig, load_config
-from .protocol import McpServer
+from .protocol import McpServer, RequestContext
 
-USER_TOOLS_PREFIX = "mail_"
-ADMIN_TOOL_PREFIXES = ("admin_", "gmail_")
+USER_TOOL_PREFIXES = ("mail_", "gmail_")
 
 
 def parse_auth(authorization: Optional[str], admin_token: str
@@ -130,8 +132,8 @@ def make_handler(server_factory, admin_token: str, max_body: int,
                  rate_limiter: Optional[RateLimiter] = None):
     """Build a handler class.
 
-    ``server_factory`` is ``build_server`` (takes optional per-request
-    ``MailConfig``); a fresh server is built per request so no mailbox
+    ``server_factory`` is ``build_server`` (takes an optional
+    ``RequestContext``); a fresh server is built per request so no mailbox
     identity is ever shared between callers.
     """
     limiter = rate_limiter or RateLimiter()
@@ -215,17 +217,20 @@ def make_handler(server_factory, admin_token: str, max_body: int,
             method = msg.get("method", "")
             params = msg.get("params") or {}
             if role == "user":
-                server = server_factory(user_mail_config(identity))
+                ctx = RequestContext(role="user", email=identity["email"],
+                                     mail_config=user_mail_config(identity),
+                                     allow_server_gmail=False)
+                server = server_factory(ctx)
                 if method == "tools/call":
                     name = params.get("name", "")
-                    if not name.startswith(USER_TOOLS_PREFIX):
+                    if not name.startswith(USER_TOOL_PREFIXES):
                         limiter.failed(ip)
                         self._rpc_error(403, -32002,
                                               f"Tool {name!r} requires operator access",
                                               msg_id=msg.get("id"))
                         return
             else:
-                server = server_factory()
+                server = server_factory(RequestContext(role="admin"))
             try:
                 resp = server.handle(msg)
             except Exception as exc:
@@ -240,7 +245,7 @@ def make_handler(server_factory, admin_token: str, max_body: int,
             if method == "tools/list" and role == "user":
                 tools = resp.get("result", {}).get("tools", [])
                 resp["result"]["tools"] = [t for t in tools
-                                           if t.get("name", "").startswith(USER_TOOLS_PREFIX)]
+                                           if t.get("name", "").startswith(USER_TOOL_PREFIXES)]
             self._send_json(200, resp)
 
     return McpHttpHandler
@@ -259,7 +264,7 @@ def serve_http(server_or_factory, host: str, port: int, token: str,
                          "set a long random Bearer token first")
     if isinstance(server_or_factory, McpServer):
         ready = server_or_factory
-        factory = lambda mail_config=None: ready  # noqa: E731
+        factory = lambda ctx=None: ready  # noqa: E731
     else:
         factory = server_or_factory
     httpd = ThreadingHTTPServer((host, port), make_handler(factory, token, max_body))

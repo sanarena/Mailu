@@ -84,15 +84,19 @@ Speak MCP over stdio: `initialize` → `tools/list` → `tools/call`.
 Two roles — this is what keeps user A from ever seeing user B's mail:
 
 - **Users** authenticate with HTTP Basic using their own Mailu login
-  (`email:password` or `email:app-token`) and may only call `mail_*`
-  tools. Every request opens its IMAP/SMTP session with those exact
-  credentials, so Dovecot/Postfix enforce the boundary — there is no
-  shared mailbox identity in HTTP mode, and sends default to the
-  caller's own address.
+  (`email:password` or `email:app-token`) and may call `mail_*` and
+  `gmail_*` tools. Every request opens its IMAP/SMTP session with those
+  exact credentials, so Dovecot/Postfix enforce the boundary — there is
+  no shared mailbox identity in HTTP mode, and sends default to the
+  caller's own address. Gmail import is per account too: pass your own
+  `gmail_access_token` (or OAuth client/secret/refresh set) with each
+  call; copies land in your mailbox and job state is namespaced per
+  owner. Without per-call credentials, Gmail tools fail closed — users
+  can never touch the server's Gmail account.
 - **Operator** authenticates with `Bearer $MCP_HTTP_ADMIN_TOKEN` and may
-  call everything: `admin_*`/`gmail_*` (global API, operator's Gmail)
-  plus `mail_*` against the single server-configured mailbox
-  (`MAILU_IMAP_*`).
+  call everything: `admin_*` (global API) plus `mail_*`/`gmail_*`
+  against the single server-configured mailbox (`MAILU_IMAP_*`) and
+  Gmail account (or per-call credentials, which always win).
 
 ```bash
 export MCP_HTTP_ADMIN_TOKEN="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
@@ -100,7 +104,10 @@ PYTHONPATH=mcp python3 -m mailu_mcp.server --http --port 8000
 curl -s http://127.0.0.1:8000/healthz   # LB probe, no auth
 curl -s -u you@example.com:secret \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp              # 7 mail_* tools only
+  http://127.0.0.1:8000/mcp              # 7 mail_* + 3 gmail_* tools
+curl -s -u you@example.com:secret \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gmail_search","arguments":{"query":"in:inbox","gmail_access_token":"ya29..."}}}' \
+  http://127.0.0.1:8000/mcp              # your Gmail, your credentials
 curl -s -H "Authorization: Bearer $MCP_HTTP_ADMIN_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   http://127.0.0.1:8000/mcp              # all 53 tools
@@ -121,7 +128,7 @@ which now includes `MCP_HTTP_ADMIN_TOKEN`).
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 64 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 70 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 7 mail + 43 admin + 3 gmail tools
 ```

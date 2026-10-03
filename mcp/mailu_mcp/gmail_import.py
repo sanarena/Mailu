@@ -164,7 +164,12 @@ def save_state(state: Dict[str, Any], path: Optional[str] = None) -> str:
 
 @dataclass
 class CopyJob:
-    """A Gmail → Mailu copy job: search `query`, copy matches to `dest_mailbox`."""
+    """A Gmail → Mailu copy job: search `query`, copy matches to `dest_mailbox`.
+
+    `owner` namespaces the state entry (HTTP Basic-auth email): two owners
+    running the same `job_name` must never share copied-ID state, since
+    Gmail IDs are only unique per Gmail account.
+    """
     query: str
     dest_mailbox: str = "INBOX"
     max_messages: int = 100
@@ -174,6 +179,11 @@ class CopyJob:
     mark_source_read: bool = False
     skip_existing: bool = True
     state_path: Optional[str] = None
+    owner: str = ""
+
+
+def state_key(job_name: str, owner: str = "") -> str:
+    return f"{owner}:{job_name}" if owner else job_name
 
 
 @dataclass
@@ -203,7 +213,8 @@ def run_copy_job(app: AppConfig, job: CopyJob) -> CopyReport:
                         matched=len(matches), copied=0, skipped=0, failed=0,
                         dry_run=job.dry_run)
     state = load_state(job.state_path)
-    done = set(state.get(job.job_name, {}).get("copied_ids", []))
+    key = state_key(job.job_name, job.owner)
+    done = set(state.get(key, {}).get("copied_ids", []))
     if job.dry_run:
         report.copied_ids = [m["id"] for m in matches if m["id"] not in done]
         report.skipped = len(matches) - len(report.copied_ids)
@@ -231,15 +242,16 @@ def run_copy_job(app: AppConfig, job: CopyJob) -> CopyReport:
         except Exception as exc:
             report.failed += 1
             report.errors.append(f"{gid}: {exc}")
-    state.setdefault(job.job_name, {})["copied_ids"] = sorted(done)
-    state[job.job_name]["last_query"] = job.query
+    state.setdefault(key, {})["copied_ids"] = sorted(done)
+    state[key]["last_query"] = job.query
     save_state(state, job.state_path)
     return report
 
 
-def job_status(job_name: str = "default", state_path: Optional[str] = None) -> Dict[str, Any]:
+def job_status(job_name: str = "default", state_path: Optional[str] = None,
+               owner: str = "") -> Dict[str, Any]:
     state = load_state(state_path)
-    entry = state.get(job_name, {})
+    entry = state.get(state_key(job_name, owner), {})
     return {"job_name": job_name, "copied_total": len(entry.get("copied_ids", [])),
             "last_query": entry.get("last_query", ""),
             "copied_ids": entry.get("copied_ids", [])}

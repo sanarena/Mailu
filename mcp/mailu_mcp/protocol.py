@@ -12,6 +12,20 @@ PROTOCOL_VERSION = "2024-11-05"
 
 
 @dataclass
+class RequestContext:
+    """Per-request identity for HTTP mode (see httpserve).
+
+    role="user" carries the Basic-auth caller's mailbox config and forbids
+    falling back to the server's Gmail credentials; role="admin" (or None
+    context, i.e. stdio) uses the server environment for everything.
+    """
+    role: str = "admin"
+    email: str = ""
+    mail_config: Any = None
+    allow_server_gmail: bool = True
+
+
+@dataclass
 class Tool:
     name: str
     description: str
