@@ -5,6 +5,7 @@ domains (CRUD, DKIM keys, managers, domain users, alternatives),
 users, aliases, relays, tokens.
 """
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,12 @@ class AdminError(RuntimeError):
         self.status = status
         self.payload = payload
         super().__init__(f"Admin API HTTP {status}: {payload}")
+
+
+def _body(kw: Dict[str, Any], exclude: tuple = ()) -> Dict[str, Any]:
+    """PATCH body: path identifiers stay in the URL, never in the JSON
+    body (flask-restx validate=True rejects unknown fields)."""
+    return {k: v for k, v in kw.items() if k not in exclude}
 
 
 class AdminClient:
@@ -53,7 +60,7 @@ class AdminClient:
 
     def create_domain(self, name: str, **kw): return self._request("POST", "domain", {"name": name, **kw})
 
-    def update_domain(self, domain: str, **kw): return self._request("PATCH", f"domain/{domain}", kw)
+    def update_domain(self, domain: str, **kw): return self._request("PATCH", f"domain/{domain}", _body(kw, ("domain",)))
 
     def delete_domain(self, domain: str): return self._request("DELETE", f"domain/{domain}")
 
@@ -90,7 +97,7 @@ class AdminClient:
     def create_user(self, email: str, raw_password: str, **kw):
         return self._request("POST", "user", {"email": email, "raw_password": raw_password, **kw})
 
-    def update_user(self, email: str, **kw): return self._request("PATCH", f"user/{email}", kw)
+    def update_user(self, email: str, **kw): return self._request("PATCH", f"user/{email}", _body(kw, ("email",)))
 
     def delete_user(self, email: str): return self._request("DELETE", f"user/{email}")
 
@@ -102,7 +109,7 @@ class AdminClient:
     def create_alias(self, email: str, destination: List[str], **kw):
         return self._request("POST", "alias", {"email": email, "destination": destination, **kw})
 
-    def update_alias(self, alias: str, **kw): return self._request("PATCH", f"alias/{alias}", kw)
+    def update_alias(self, alias: str, **kw): return self._request("PATCH", f"alias/{alias}", _body(kw, ("alias",)))
 
     def delete_alias(self, alias: str): return self._request("DELETE", f"alias/{alias}")
 
@@ -115,7 +122,7 @@ class AdminClient:
 
     def create_relay(self, name: str, **kw): return self._request("POST", "relay", {"name": name, **kw})
 
-    def update_relay(self, name: str, **kw): return self._request("PATCH", f"relay/{name}", kw)
+    def update_relay(self, name: str, **kw): return self._request("PATCH", f"relay/{name}", _body(kw, ("name",)))
 
     def delete_relay(self, name: str): return self._request("DELETE", f"relay/{name}")
 
@@ -133,6 +140,6 @@ class AdminClient:
     def get_token(self, token_id: str): return self._request("GET", f"token/{token_id}")
 
     def update_token(self, token_id: str, **kw):
-        return self._request("PATCH", f"token/{token_id}", kw)
+        return self._request("PATCH", f"token/{token_id}", _body(kw, ("token_id",)))
 
     def delete_token(self, token_id: str): return self._request("DELETE", f"token/{token_id}")

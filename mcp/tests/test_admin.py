@@ -69,6 +69,16 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(captured["body"]["quota_bytes"], 10)
 
     @patch("mcp.mailu_mcp.admin.urllib.request.urlopen", fake_urlopen)
+    def test_patch_body_has_no_path_identifiers(self):
+        self.client.update_user("a@example.com", comment="hi", quota_bytes=5)
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["body"], {"comment": "hi", "quota_bytes": 5})
+        self.client.update_domain("example.com", comment="c")
+        self.assertEqual(captured["body"], {"comment": "c"})
+        self.client.update_token("7", comment="t")
+        self.assertEqual(captured["body"], {"comment": "t"})
+
+    @patch("mcp.mailu_mcp.admin.urllib.request.urlopen", fake_urlopen)
     def test_delete_alias(self):
         self.client.delete_alias("x@example.com")
         self.assertEqual(captured["method"], "DELETE")

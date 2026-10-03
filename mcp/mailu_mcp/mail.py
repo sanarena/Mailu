@@ -1,5 +1,6 @@
 """IMAP search/read + SMTP send for Mailu mailboxes (stdlib only)."""
 import imaplib
+import re
 import smtplib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -99,26 +100,38 @@ def connect_imap(cfg: MailConfig):
             pass
 
 
+def _quote_mailbox(mailbox: str) -> str:
+    """Quote an IMAP mailbox name (escapes backslash and double-quote)."""
+    return '"' + mailbox.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _parse_overview(uid: int, fetch: List[Any]) -> Dict[str, Any]:
-    flags = b""
+    """Parse one UID FETCH response.
+
+    Real imaplib responses look like
+    ``[(b'1 (FLAGS (\\\\Seen) RFC822.SIZE 2048 BODY[HEADER.FIELDS (...) {90}',
+    b'From: ...'), b')']`` — FLAGS and RFC822.SIZE live in the *label*,
+    the header bytes in the payload.
+    """
+    flags = ""
     size = 0
     raw_header = b""
     for part in fetch:
         if isinstance(part, tuple) and len(part) == 2:
             label, payload = part[0], part[1]
-            if b"FLAGS" in label:
-                flags = payload if isinstance(payload, bytes) else b""
-            elif isinstance(payload, bytes):
+            if isinstance(label, bytes):
+                m = re.search(rb"FLAGS \(([^)]*)\)", label)
+                if m:
+                    flags = m.group(1).decode("utf-8", "replace")
+                m = re.search(rb"RFC822\.SIZE (\d+)", label)
+                if m:
+                    size = int(m.group(1))
+            if isinstance(payload, bytes):
                 raw_header += payload
-        elif isinstance(part, bytes) and b"RFC822.SIZE" in part:
-            try:
-                size = int(part.split(b"RFC822.SIZE")[1].strip().split()[0])
-            except (IndexError, ValueError):
-                size = 0
     msg = BytesParser(policy=policy.default).parsebytes(raw_header) if raw_header else None
     return {
         "uid": uid,
-        "flags": flags.decode("utf-8", "replace") if isinstance(flags, bytes) else str(flags),
+        "flags": flags,
         "size": size,
         "from": _decode(msg["From"]) if msg else "",
         "to": _decode(msg["To"]) if msg else "",
@@ -132,7 +145,7 @@ def _parse_overview(uid: int, fetch: List[Any]) -> Dict[str, Any]:
 def search_emails(cfg: MailConfig, mailbox: str = "INBOX", limit: int = 50, **filters) -> List[Dict[str, Any]]:
     criteria = build_search_criteria(**filters)
     with connect_imap(cfg) as conn:
-        conn.select(f'"{mailbox}"', readonly=True)
+        conn.select(_quote_mailbox(mailbox), readonly=True)
         typ, data = conn.uid("search", None, criteria)
         if typ != "OK":
             raise RuntimeError(f"IMAP search failed: {typ} {data}")
@@ -185,11 +198,16 @@ def _message_to_dict(uid: int, raw: bytes, include_body: bool, max_bytes: int) -
                     body_html = part.get_content() or ""
         else:
             ctype = msg.get_content_type()
-            content = msg.get_content() if hasattr(msg, "get_content") else ""
-            if ctype == "text/html":
-                body_html = content or ""
+            if msg.get_content_disposition() == "attachment":
+                payload = msg.get_payload(decode=True) or b""
+                attachments.append({"filename": msg.get_filename() or "",
+                                    "content_type": ctype, "size": len(payload)})
             else:
-                body_text = content or ""
+                content = msg.get_content() if hasattr(msg, "get_content") else ""
+                if ctype == "text/html":
+                    body_html = content or ""
+                else:
+                    body_text = content or ""
     if max_bytes and max_bytes > 0:
         body_text = body_text[:max_bytes]
         body_html = body_html[:max_bytes]
@@ -200,7 +218,7 @@ def _message_to_dict(uid: int, raw: bytes, include_body: bool, max_bytes: int) -
 def get_email(cfg: MailConfig, mailbox: str, uid: int, mark_seen: bool = False,
               include_body: bool = True, max_bytes: int = 200000) -> Dict[str, Any]:
     with connect_imap(cfg) as conn:
-        conn.select(f'"{mailbox}"', readonly=not mark_seen)
+        conn.select(_quote_mailbox(mailbox), readonly=not mark_seen)
         mode = "BODY[]" if mark_seen else "BODY.PEEK[]"
         typ, fetched = conn.uid("fetch", str(uid), f"({mode})")
         if typ != "OK" or not fetched or fetched[0] is None:
@@ -217,23 +235,26 @@ def list_mailboxes(cfg: MailConfig) -> List[str]:
         boxes = []
         for entry in data or []:
             try:
-                boxes.append(entry.decode("utf-8", "replace").split(' "/" ')[-1].strip('" '))
+                text = entry.decode("utf-8", "replace") if isinstance(entry, bytes) else str(entry)
             except Exception:
                 continue
+            m = re.search(r'"([^"]+)"\s*$', text)  # any hierarchy delimiter
+            if m:
+                boxes.append(m.group(1))
         return boxes
 
 
 def set_flags(cfg: MailConfig, mailbox: str, uid: int, flags: List[str], mode: str = "add") -> bool:
     op = {"add": "+FLAGS", "remove": "-FLAGS", "set": "FLAGS"}.get(mode, "+FLAGS")
     with connect_imap(cfg) as conn:
-        conn.select(f'"{mailbox}"')
+        conn.select(_quote_mailbox(mailbox))
         typ, _ = conn.uid("store", str(uid), op, f"({' '.join(flags)})")
         return typ == "OK"
 
 
 def delete_message(cfg: MailConfig, mailbox: str, uid: int, expunge: bool = True) -> bool:
     with connect_imap(cfg) as conn:
-        conn.select(f'"{mailbox}"')
+        conn.select(_quote_mailbox(mailbox))
         typ, _ = conn.uid("store", str(uid), "+FLAGS", "(\\Deleted)")
         if expunge and typ == "OK":
             conn.expunge()
@@ -242,8 +263,8 @@ def delete_message(cfg: MailConfig, mailbox: str, uid: int, expunge: bool = True
 
 def move_message(cfg: MailConfig, mailbox: str, uid: int, dest_mailbox: str) -> bool:
     with connect_imap(cfg) as conn:
-        conn.select(f'"{mailbox}"')
-        typ, _ = conn.uid("copy", str(uid), f'"{dest_mailbox}"')
+        conn.select(_quote_mailbox(mailbox))
+        typ, _ = conn.uid("copy", str(uid), _quote_mailbox(dest_mailbox))
         if typ != "OK":
             return False
         conn.uid("store", str(uid), "+FLAGS", "(\\Deleted)")
@@ -254,7 +275,7 @@ def move_message(cfg: MailConfig, mailbox: str, uid: int, dest_mailbox: str) -> 
 def append_message(cfg: MailConfig, mailbox: str, raw: bytes, flags: str = "(\\Seen)") -> bool:
     """Append a raw RFC822 message to a mailbox (used by the Gmail copy job)."""
     with connect_imap(cfg) as conn:
-        typ, _ = conn.append(f'"{mailbox}"', flags, None, raw)
+        typ, _ = conn.append(_quote_mailbox(mailbox), flags, None, raw)
         return typ == "OK"
 
 
@@ -313,12 +334,13 @@ def send_email(
                            subtype=att.get("subtype", "octet-stream"),
                            filename=att.get("filename", "attachment"))
     recipients = list(to) + list(cc or []) + list(bcc or [])
-    if cfg.smtp_port == 465 and cfg.smtp_starttls:
+    implicit_tls = cfg.smtp_port == 465  # smtps: TLS from the first byte
+    if implicit_tls:
         server: smtplib.SMTP = smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port)
     else:
         server = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port)
     with server as s:
-        if cfg.smtp_starttls and cfg.smtp_port != 465:
+        if cfg.smtp_starttls and not implicit_tls:
             s.starttls()
         if cfg.smtp_user:
             s.login(cfg.smtp_user, cfg.smtp_password)

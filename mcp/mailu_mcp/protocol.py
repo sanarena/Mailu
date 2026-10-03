@@ -94,10 +94,18 @@ class McpServer:
                                                    "message": f"Parse error: {exc}"}}) + "\n")
                 stdout.flush()
                 continue
+            if not isinstance(msg, dict):
+                # JSON-RPC batch arrays are not supported; reject, never crash.
+                stdout.write(json.dumps({"jsonrpc": "2.0", "id": None,
+                                         "error": {"code": -32600,
+                                                   "message": "Invalid Request: batch not supported"}}) + "\n")
+                stdout.flush()
+                continue
             try:
                 resp = self.handle(msg)
             except Exception as exc:
-                resp = {"jsonrpc": "2.0", "id": msg.get("id"),
+                msg_id = msg.get("id") if isinstance(msg, dict) else None
+                resp = {"jsonrpc": "2.0", "id": msg_id,
                         "error": {"code": -32603, "message": str(exc)}}
             if resp is not None:
                 stdout.write(json.dumps(resp) + "\n")

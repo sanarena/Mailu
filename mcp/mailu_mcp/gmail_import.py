@@ -76,7 +76,9 @@ def _api(cfg: GmailConfig, path: str, params: Optional[dict] = None) -> Any:
     token = ensure_access_token(cfg)
     url = f"{GMAIL_API}{path}"
     if params:
-        url += "?" + urllib.parse.urlencode(params)
+        # doseq: list values (labelIds) become repeated query params,
+        # which is what the Gmail API expects.
+        url += "?" + urllib.parse.urlencode(params, doseq=True)
     return _http("GET", url, headers={"Authorization": f"Bearer {token}"})
 
 
@@ -92,7 +94,7 @@ def gmail_search(cfg: GmailConfig, query: str, max_results: int = 50,
     """Run a Gmail search query; return message metadata (id/thread/subject/from/date)."""
     params: Dict[str, Any] = {"q": query, "maxResults": max(1, min(int(max_results), 500))}
     if label_ids:
-        params["labelIds"] = ",".join(label_ids)
+        params["labelIds"] = list(label_ids)
     found: List[Dict[str, Any]] = []
     page = None
     while len(found) < max_results:

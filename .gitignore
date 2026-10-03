@@ -15,6 +15,7 @@ pip-selfcheck.json
 /docs/contributors/mailu-network-diagram.svg
 /docs/_build
 /.env
+/mcp/.env
 /.venv
 /docker-compose.yml
 /.idea

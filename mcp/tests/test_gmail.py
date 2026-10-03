@@ -62,6 +62,17 @@ class GmailTests(unittest.TestCase):
         list_call = [c for c in calls if c[0] == "/users/me/messages"][0]
         self.assertEqual(list_call[1]["q"], "from:alice")
 
+    def test_label_ids_sent_as_repeated_params(self):
+        seen = {}
+
+        def fake(cfg, path, params=None):
+            seen.update(params or {})
+            return {"messages": []}
+
+        with patch.object(gi, "_api", fake):
+            gi.gmail_search(self.gmail, "x", label_ids=["INBOX", "STARRED"])
+        self.assertEqual(seen.get("labelIds"), ["INBOX", "STARRED"])
+
     def test_fetch_raw_decodes(self):
         with patch.object(gi, "_api", self._api([])):
             self.assertEqual(gi.gmail_fetch_raw(self.gmail, "g1"), RAW)
