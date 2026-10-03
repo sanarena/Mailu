@@ -1,4 +1,5 @@
-"""Mailu MCP: mail tools (IMAP search/read + SMTP send). Branch: feature/mail-mcp."""
+"""Mailu MCP: mail + admin tools. Branch: feature/admin-mcp (stacked on mail-mcp)."""
+from .admin import AdminClient, AdminError
 from .mail import (
     MailConfig,
     MailboxMessage,
@@ -11,8 +12,11 @@ from .mail import (
     set_flags,
 )
 from .config import load_config
+from .server import build_server, register_admin_tools
 
 __all__ = [
+    "AdminClient",
+    "AdminError",
     "MailConfig",
     "MailboxMessage",
     "build_search_criteria",
@@ -23,4 +27,6 @@ __all__ = [
     "delete_message",
     "set_flags",
     "load_config",
+    "build_server",
+    "register_admin_tools",
 ]

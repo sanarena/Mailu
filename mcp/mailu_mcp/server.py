@@ -1,15 +1,18 @@
-"""Mailu MCP server — mail lane (feature/mail-mcp).
+"""Mailu MCP server — admin lane (feature/admin-mcp).
 
-Stdio entry point exposing IMAP search/read + SMTP send as MCP tools.
-Admin and Gmail-import tools live on their own branches; feature/combined
-serves every tool at once.
+Stdio entry point exposing mail tools plus the full Mailu admin REST API
+as MCP tools. Gmail-import tools live on their own branch;
+feature/combined serves every tool at once.
 """
+from typing import Any, Dict
+
+from .admin import AdminClient, AdminError
 from .config import load_config
 from . import mail as mail_mod
 from .protocol import McpServer
 
-SERVER_NAME = "mailu-mail"
-SERVER_VERSION = "0.1.0"
+SERVER_NAME = "mailu-admin"
+SERVER_VERSION = "0.2.0"
 
 
 def build_server() -> McpServer:
@@ -103,7 +106,86 @@ def build_server() -> McpServer:
         return {"ok": mail_mod.delete_message(m, args["mailbox"], args["uid"],
                                               args.get("expunge", True))}
 
+    register_admin_tools(server)
     return server
+
+
+def register_admin_tools(server: McpServer) -> None:
+    """Register every Mailu admin REST endpoint as an MCP tool (client built lazily)."""
+    bound: Dict[str, Any] = {}
+
+    def _client() -> AdminClient:
+        if "client" not in bound:
+            bound["client"] = AdminClient(load_config().admin)
+        return bound["client"]
+
+    def _call(method: str, args, required=()):
+        missing = [k for k in required if k not in args]
+        if missing:
+            raise ValueError(f"Missing required arguments: {', '.join(missing)}")
+        try:
+            return getattr(_client(), method)(**args)
+        except AdminError as exc:
+            raise RuntimeError(f"Admin API error: {exc}") from exc
+
+    specs = [
+        # domains
+        ("admin_domains_list", "List all domains.", "list_domains", []),
+        ("admin_domain_get", "Look up one domain (incl. DNS records).", "get_domain", ["domain"]),
+        ("admin_domain_create", "Create a domain: name + comment/max_users/max_aliases/max_quota_bytes/signup_enabled/alternatives.",
+         "create_domain", ["name"]),
+        ("admin_domain_update", "Update a domain (PATCH).", "update_domain", ["domain"]),
+        ("admin_domain_delete", "Delete a domain.", "delete_domain", ["domain"]),
+        ("admin_domain_dkim", "Generate new DKIM/DMARC keys for a domain.", "generate_dkim", ["domain"]),
+        ("admin_managers_list", "List managers of a domain.", "list_managers", ["domain"]),
+        ("admin_manager_add", "Add a domain manager.", "add_manager", ["domain", "user_email"]),
+        ("admin_manager_check", "Check whether a user manages a domain.", "check_manager", ["domain", "email"]),
+        ("admin_manager_remove", "Remove a domain manager.", "remove_manager", ["domain", "email"]),
+        ("admin_domain_users", "List all users of a domain.", "list_domain_users", ["domain"]),
+        # alternative domains
+        ("admin_alternatives_list", "List all alternative domains.", "list_alternatives", []),
+        ("admin_alternative_get", "Look up one alternative domain.", "get_alternative", ["alt"]),
+        ("admin_alternative_create", "Create an alternative domain for a domain.", "create_alternative", ["name", "domain"]),
+        ("admin_alternative_delete", "Delete an alternative domain.", "delete_alternative", ["alt"]),
+        # users (all UserGet/UserCreate/UserUpdate parameters pass through)
+        ("admin_users_list", "List all users.", "list_users", []),
+        ("admin_user_get", "Look up one user (quota, forwarding, autoreply, spam…).", "get_user", ["email"]),
+        ("admin_user_create", "Create a user: email + raw_password + every optional user parameter.",
+         "create_user", ["email", "raw_password"]),
+        ("admin_user_update", "Update a user (PATCH, any user parameter).", "update_user", ["email"]),
+        ("admin_user_delete", "Delete a user.", "delete_user", ["email"]),
+        # aliases
+        ("admin_aliases_list", "List all aliases.", "list_aliases", []),
+        ("admin_alias_get", "Look up one alias.", "get_alias", ["alias"]),
+        ("admin_alias_create", "Create an alias: email + destination[] + comment/wildcard/hostname.",
+         "create_alias", ["email", "destination"]),
+        ("admin_alias_update", "Update an alias (PATCH).", "update_alias", ["alias"]),
+        ("admin_alias_delete", "Delete an alias.", "delete_alias", ["alias"]),
+        ("admin_aliases_by_domain", "Look up aliases of a domain.", "aliases_by_domain", ["domain"]),
+        # relays
+        ("admin_relays_list", "List all relayed domains.", "list_relays", []),
+        ("admin_relay_get", "Look up one relayed domain.", "get_relay", ["name"]),
+        ("admin_relay_create", "Create a relayed domain: name + smtp + comment.", "create_relay", ["name"]),
+        ("admin_relay_update", "Update a relayed domain (PATCH).", "update_relay", ["name"]),
+        ("admin_relay_delete", "Delete a relayed domain.", "delete_relay", ["name"]),
+        # tokens
+        ("admin_tokens_list", "List all auth tokens.", "list_tokens", []),
+        ("admin_token_create", "Create a token for a user (email + comment/AuthorizedIP).", "create_token", ["email"]),
+        ("admin_tokens_of_user", "List all tokens of a user.", "tokens_of_user", ["email"]),
+        ("admin_user_token_create", "Create a token for a given user path.", "create_user_token", ["email"]),
+        ("admin_token_get", "Find a token by id.", "get_token", ["token_id"]),
+        ("admin_token_update", "Update a token (comment/AuthorizedIP).", "update_token", ["token_id"]),
+        ("admin_token_delete", "Delete a token.", "delete_token", ["token_id"]),
+    ]
+    for name, desc, method, required in specs:
+        schema: dict = {"type": "object"}
+        if required:
+            schema["required"] = required
+            schema["properties"] = {k: {} for k in required}
+        else:
+            schema["properties"] = {}
+        server.tool(name, desc, schema)(
+            lambda args, _m=method, _req=required: _call(_m, args, _req))
 
 
 def main() -> None:
