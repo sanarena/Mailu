@@ -176,6 +176,35 @@ class GmailTests(unittest.TestCase):
         st = gi.job_status("part", self.state)
         self.assertEqual(sorted(st["copied_ids"]), ["g1", "g3"])
 
+    def test_concurrent_same_job_copies_once(self):
+        import threading
+        import time
+
+        calls = []
+        appended = []
+        with patch.object(gi, "_api", self._api(calls)):
+            def slow_append(cfg, box, raw, flags="(\\Seen)"):
+                time.sleep(0.05)  # force thread overlap without the lock
+                appended.append(raw)
+                return True
+
+            with patch("mcp.mailu_mcp.mail.append_message", slow_append):
+                job = gi.CopyJob(query="in:inbox", job_name="race",
+                                 state_path=self.state)
+                reports = []
+                workers = [threading.Thread(target=lambda: reports.append(
+                    gi.run_copy_job(self.app, job).as_dict())) for _ in range(2)]
+                for w in workers:
+                    w.start()
+                for w in workers:
+                    w.join(timeout=30)
+        # 2 messages, 2 racing runs: exactly 2 APPENDs, never 4.
+        self.assertEqual(len(appended), 2)
+        self.assertEqual(sum(r["copied"] for r in reports), 2)
+        self.assertEqual(sum(r["skipped"] for r in reports), 2)
+        st = gi.job_status("race", self.state)
+        self.assertEqual(st["copied_total"], 2)
+
     def test_corrupt_state_file_starts_empty(self):
         with open(self.state, "w") as fh:
             fh.write("{not json")

@@ -92,9 +92,9 @@ def build_search_criteria(
 @contextmanager
 def connect_imap(cfg: MailConfig):
     if cfg.imap_ssl:
-        conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port)
+        conn = imaplib.IMAP4_SSL(cfg.imap_host, cfg.imap_port, timeout=cfg.timeout)
     else:
-        conn = imaplib.IMAP4(cfg.imap_host, cfg.imap_port)
+        conn = imaplib.IMAP4(cfg.imap_host, cfg.imap_port, timeout=cfg.timeout)
     try:
         conn.login(cfg.imap_user, cfg.imap_password)
         yield conn
@@ -303,6 +303,13 @@ def send_email(
     sender = from_addr or cfg.default_from or cfg.smtp_user
     if not sender:
         raise ValueError("No sender: pass from_addr or set MAILU_DEFAULT_FROM/MAILU_SMTP_USER")
+    # Lenient coercion: LLM callers often send a bare string address.
+    if isinstance(to, str):
+        to = [to]
+    if isinstance(cc, str):
+        cc = [cc]
+    if isinstance(bcc, str):
+        bcc = [bcc]
     if not to:
         raise ValueError("Recipient list 'to' must not be empty")
     msg = EmailMessage()
@@ -345,9 +352,10 @@ def send_email(
     recipients = list(to) + list(cc or []) + list(bcc or [])
     implicit_tls = cfg.smtp_port == 465  # smtps: TLS from the first byte
     if implicit_tls:
-        server: smtplib.SMTP = smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port)
+        server: smtplib.SMTP = smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port,
+                                                timeout=cfg.timeout)
     else:
-        server = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port)
+        server = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=cfg.timeout)
     with server as s:
         if cfg.smtp_starttls and not implicit_tls:
             s.starttls()

@@ -129,17 +129,20 @@ def user_mail_config(identity: Dict[str, str]) -> MailConfig:
 
 
 def make_handler(server_factory, admin_token: str, max_body: int,
-                 rate_limiter: Optional[RateLimiter] = None):
+                 rate_limiter: Optional[RateLimiter] = None,
+                 request_timeout: float = 120.0):
     """Build a handler class.
 
     ``server_factory`` is ``build_server`` (takes an optional
     ``RequestContext``); a fresh server is built per request so no mailbox
-    identity is ever shared between callers.
+    identity is ever shared between callers. ``request_timeout`` bounds
+    each connection so stalled clients cannot pile up handler threads.
     """
     limiter = rate_limiter or RateLimiter()
 
     class McpHttpHandler(BaseHTTPRequestHandler):
         server_version = "MailuMCP/1.0"
+        timeout = request_timeout
 
         def log_message(self, fmt, *args):  # one line per request on stderr
             import sys

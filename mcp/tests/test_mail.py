@@ -94,6 +94,39 @@ class MailTests(unittest.TestCase):
         out = mail_mod._message_to_dict(1, raw, False, 0)
         self.assertEqual(out["subject"], "Höse öföle")
 
+    def test_search_limit_clamped(self):
+        seen = {}
+
+        def fake_search(cfg, mailbox="INBOX", limit=50, **kw):
+            seen["limit"] = limit
+            return []
+
+        handler = build_server().tools["mail_search"].handler
+        with patch.object(mail_mod, "search_emails", fake_search):
+            handler({"limit": None})
+            self.assertEqual(seen["limit"], 50)
+            handler({"limit": 0})
+            self.assertEqual(seen["limit"], 50)
+            handler({"limit": 10 ** 9})
+            self.assertEqual(seen["limit"], 500)
+            handler({"limit": "10"})
+            self.assertEqual(seen["limit"], 10)
+            with self.assertRaises(ValueError):
+                handler({"limit": "abc"})
+
+    def test_send_coerces_string_recipients(self):
+        cfg = MailConfig(smtp_host="h", smtp_port=587,
+                         default_from="me@x.io")
+        fake = MagicMock()
+        fake.__enter__ = MagicMock(return_value=fake)
+        fake.__exit__ = MagicMock(return_value=False)
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake):
+            out = mail_mod.send_email(cfg, to="a@x.io", cc="c@x.io",
+                                      bcc="h@x.io", subject="s")
+        sent = fake.send_message.call_args
+        self.assertEqual(sent[1]["to_addrs"], ["a@x.io", "c@x.io", "h@x.io"])
+        self.assertIn("a@x.io", out["to"])
+
     def test_search_values_are_escaped(self):
         c = mail_mod.build_search_criteria(subject='say "hi" \\ bye')
         self.assertIn(r'SUBJECT "say \"hi\" \\ bye"', c)
@@ -166,7 +199,7 @@ class MailTests(unittest.TestCase):
         with patch("mcp.mailu_mcp.mail.smtplib.SMTP_SSL", return_value=ssl_fake) as m_ssl, \
              patch("mcp.mailu_mcp.mail.smtplib.SMTP") as m_plain:
             mail_mod.send_email(cfg, to=["a@x.io"], subject="s")
-        m_ssl.assert_called_once_with("h", 465)
+        m_ssl.assert_called_once_with("h", 465, timeout=60)
         m_plain.assert_not_called()
         ssl_fake.starttls.assert_not_called()
 

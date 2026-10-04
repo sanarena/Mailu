@@ -16,6 +16,7 @@ set without copying anything.
 import base64
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,12 @@ from .config import AppConfig, GmailConfig, MailConfig
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+# Serializes copy jobs in this process: without it, two concurrent runs of
+# the same job would both read empty state, both APPEND, and the second
+# save would wipe the first run's copied IDs (duplicates on retry).
+# Single-replica deployment + this lock = one writer at a time.
+_STATE_LOCK = threading.Lock()
 
 
 class GmailError(RuntimeError):
@@ -218,39 +225,42 @@ def run_copy_job(app: AppConfig, job: CopyJob) -> CopyReport:
     report = CopyReport(job_name=job.job_name, query=job.query,
                         matched=len(matches), copied=0, skipped=0, failed=0,
                         dry_run=job.dry_run)
-    state = load_state(job.state_path)
-    key = state_key(job.job_name, job.owner)
-    done = set(state.get(key, {}).get("copied_ids", []))
-    if job.dry_run:
-        report.copied_ids = [m["id"] for m in matches if m["id"] not in done]
-        report.skipped = len(matches) - len(report.copied_ids)
-        return report
-    for m in matches:
-        gid = m["id"]
-        if job.skip_existing and gid in done:
-            report.skipped += 1
-            continue
-        try:
-            raw = gmail_fetch_raw(app.gmail, gid)
-            if not mail_mod.append_message(app.mail, job.dest_mailbox, raw):
-                raise RuntimeError(f"IMAP APPEND to {job.dest_mailbox} failed")
-            # Record the copy BEFORE the optional mark-read: the bytes are
-            # safe in Mailu even if flagging the Gmail original fails, and
-            # the next run must not copy it a second time.
-            done.add(gid)
-            report.copied += 1
-            report.copied_ids.append(gid)
-            if job.mark_source_read:
-                try:
-                    gmail_mark_read(app.gmail, gid)
-                except Exception as exc:
-                    report.errors.append(f"{gid}: copied, but mark-read failed: {exc}")
-        except Exception as exc:
-            report.failed += 1
-            report.errors.append(f"{gid}: {exc}")
-    state.setdefault(key, {})["copied_ids"] = sorted(done)
-    state[key]["last_query"] = job.query
-    save_state(state, job.state_path)
+    # Everything from the state read to the state write runs under one lock:
+    # a concurrent twin must see this run's copied IDs, never an empty set.
+    with _STATE_LOCK:
+        state = load_state(job.state_path)
+        key = state_key(job.job_name, job.owner)
+        done = set(state.get(key, {}).get("copied_ids", []))
+        if job.dry_run:
+            report.copied_ids = [m["id"] for m in matches if m["id"] not in done]
+            report.skipped = len(matches) - len(report.copied_ids)
+            return report
+        for m in matches:
+            gid = m["id"]
+            if job.skip_existing and gid in done:
+                report.skipped += 1
+                continue
+            try:
+                raw = gmail_fetch_raw(app.gmail, gid)
+                if not mail_mod.append_message(app.mail, job.dest_mailbox, raw):
+                    raise RuntimeError(f"IMAP APPEND to {job.dest_mailbox} failed")
+                # Record the copy BEFORE the optional mark-read: the bytes are
+                # safe in Mailu even if flagging the Gmail original fails, and
+                # the next run must not copy it a second time.
+                done.add(gid)
+                report.copied += 1
+                report.copied_ids.append(gid)
+                if job.mark_source_read:
+                    try:
+                        gmail_mark_read(app.gmail, gid)
+                    except Exception as exc:
+                        report.errors.append(f"{gid}: copied, but mark-read failed: {exc}")
+            except Exception as exc:
+                report.failed += 1
+                report.errors.append(f"{gid}: {exc}")
+        state.setdefault(key, {})["copied_ids"] = sorted(done)
+        state[key]["last_query"] = job.query
+        save_state(state, job.state_path)
     return report
 
 

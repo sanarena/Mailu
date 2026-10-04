@@ -27,6 +27,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.mail.imap_port, 143)
         self.assertFalse(cfg.mail.imap_ssl)
         self.assertEqual(cfg.admin.api_token, "tok")
+        self.assertEqual(cfg.mail.timeout, 60)
+        with patch.dict(os.environ, {"MAILU_TIMEOUT": "5"}, clear=True):
+            self.assertEqual(load_config().mail.timeout, 5)
 
     def test_bad_int_names_the_variable(self):
         with patch.dict(os.environ, {"MAILU_IMAP_PORT": "abc"}, clear=True):

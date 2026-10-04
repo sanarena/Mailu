@@ -158,6 +158,26 @@ class HttpTests(ServedCase):
                                   {"name": name, "arguments": {}})
             self.assertEqual(status, 200, name)
 
+    def test_idle_connection_times_out(self):
+        import socket
+        handler = httpserve.make_handler(demo_server, TOKEN, 1024,
+                                         request_timeout=1)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        httpd.daemon_threads = True
+        port = httpd.server_address[1]
+        worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+        worker.start()
+        try:
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+            with sock:
+                sock.settimeout(10)
+                chunk = sock.recv(4096)  # server must close the idle socket
+            self.assertEqual(chunk, b"")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            worker.join(timeout=10)
+
     def test_malformed_call_params_get_clean_error(self):
         # Non-dict params must not kill the HTTP connection.
         status, body = self._post("/mcp", {"jsonrpc": "2.0", "id": 9,

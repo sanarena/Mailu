@@ -26,6 +26,7 @@ class MailConfig:
     smtp_password: str = ""
     smtp_starttls: bool = True
     default_from: str = ""
+    timeout: int = 60
 
 
 @dataclass
@@ -73,6 +74,7 @@ class AppConfig:
             smtp_password=os.getenv("MAILU_SMTP_PASSWORD", ""),
             smtp_starttls=os.getenv("MAILU_SMTP_STARTTLS", "true").lower() not in ("0", "false", "no"),
             default_from=os.getenv("MAILU_DEFAULT_FROM", os.getenv("MAILU_IMAP_USER", "")),
+            timeout=_int("MAILU_TIMEOUT", 60),
         )
         admin = AdminConfig(
             base_url=os.getenv("MAILU_API_BASE", "https://localhost/api").rstrip("/"),

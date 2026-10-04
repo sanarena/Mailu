@@ -45,8 +45,13 @@ def build_server(ctx=None) -> McpServer:
                       "uids": {"type": "array", "items": {"type": "integer"}},
                       "larger": {"type": "integer"}, "smaller": {"type": "integer"}}})
     def _search(args):
-        return mail_mod.search_emails(m, args.get("mailbox", "INBOX"),
-                                      args.get("limit", 50),
+        # Clamp: null/0/negative/huge limits must not mean "fetch everything".
+        try:
+            limit = int(args.get("limit", 50) or 50)
+        except (TypeError, ValueError):
+            raise ValueError("limit must be an integer")
+        limit = max(1, min(limit, 500))
+        return mail_mod.search_emails(m, args.get("mailbox", "INBOX"), limit,
                                       **{k: v for k, v in args.items()
                                          if k not in ("mailbox", "limit")})
 
