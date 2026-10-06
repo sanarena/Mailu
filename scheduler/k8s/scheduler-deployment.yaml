@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mail-scheduler
+  namespace: mail
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mail-scheduler
+  template:
+    metadata:
+      labels:
+        app: mail-scheduler
+    spec:
+      securityContext:
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: scheduler
+          image: sanarena/mail-scheduler:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: web
+              containerPort: 8080
+          env:
+            - name: POSTFIX_HOST
+              value: mail-mailu-postfix.mail.svc.cluster.local
+            - name: DOVECOT_HOST
+              value: mail-mailu-dovecot.mail.svc.cluster.local
+            - name: LOCAL_DOMAINS
+              value: arminnikdel.com
+            - name: DB_PATH
+              value: /data/scheduler.db
+            - name: API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: scheduler-api
+                  key: api-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: web
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: web
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mail-scheduler-data
