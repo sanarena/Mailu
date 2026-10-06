@@ -39,10 +39,12 @@ class WebTest(unittest.TestCase):
         self.passwords = {'admin@x.test': 'adminpw', 'a@x.test': 'apw',
                           'b@x.test': 'bpw'}
         self.sent = []
+        self.filed = []
         self.app = TrackerApp(
             FakeConfig(), self.store, NullGeoDB(),
             auth_fn=lambda u, p: self.passwords.get(u) == p,
-            smtp_fn=lambda u, p, m: self.sent.append((u, m)))
+            smtp_fn=lambda u, p, m: self.sent.append((u, m)),
+            file_fn=lambda *a: self.filed.append(a) or True)
         self.mid_a = self.store.add_message(
             'tokA', '<a>', 'a@x.test', 'Hello', ['c@y.test'],
             ['http://e.test/'], 10)
@@ -287,18 +289,48 @@ class WebTest(unittest.TestCase):
             import json as _json
             res = _json.loads(body)
             self.assertEqual((res['scheduled'], res['send_at']), (7, send_at))
+            self.assertTrue(res['filed'])
             self.assertEqual(self.sent, [])  # not sent live
+            user, pw, folder, mime = self.filed[0]
+            self.assertEqual((user, pw, folder),
+                             ('a@x.test', 'apw', 'Scheduled'))
+            self.assertIn(b'Subject: Later', bytes(mime))
             user, sender, rcpts, mime, sat = scheduled[0]
             self.assertEqual((user, sender, rcpts, sat),
                              ('a@x.test', 'a@x.test', ['c@y.test'], send_at))
             self.assertIn(b'X-Tracker-Track: no', bytes(mime))
             self.assertIn(b'Subject: Later', bytes(mime))
+            # shared MID: stored bytes and staged copy must match for filing
+            import re as _re
+            m1 = _re.search(rb'Message-ID: (<[^<>]+@x\.test>)', bytes(mime))
+            self.assertIsNotNone(m1)
+            m2 = _re.search(rb'Message-ID: (<[^<>]+>)',
+                            bytes(self.filed[0][3]))
+            self.assertEqual(m1.group(1), m2.group(1))
             # past send_at rejected
             status, _, _ = self.call('POST', '/api/compose', {
                 'to': ['c@y.test'], 'subject': 'x', 'body': 'y',
                 'password': 'apw', 'send_at': int(_time.time()) - 10},
                 user='a@x.test')
             self.assertEqual(status, 400)
+        finally:
+            del self.app.config.scheduler_url
+
+    def test_compose_schedule_file_failure_still_ok(self):
+        import time as _time
+        self.app.schedule_fn = lambda *a: {'id': 9}
+        self.app.file_fn = lambda *a: (_ for _ in ()).throw(
+            ConnectionError('imap down'))
+        self.app.config.scheduler_url = 'http://scheduler:8080'
+        try:
+            send_at = int(_time.time()) + 600
+            status, _, body = self.call('POST', '/api/compose', {
+                'to': ['c@y.test'], 'subject': 'Later', 'body': 'hi',
+                'password': 'apw', 'send_at': send_at}, user='a@x.test')
+            self.assertEqual(status, 200)
+            res = json.loads(body)
+            self.assertEqual(res['scheduled'], 9)
+            self.assertFalse(res['filed'])
         finally:
             del self.app.config.scheduler_url
 

@@ -304,9 +304,14 @@
     api('POST', '/api/compose', payload).then(function (res) {
       $('compose-pass').value = '';
       $('compose-send-at').value = '';
-      okBox.textContent = res && res.send_at
-        ? 'Scheduled for ' + absTime(res.send_at) + '.'
-        : 'Sent.';
+      var msg = 'Sent.';
+      if (res && res.send_at) {
+        msg = 'Scheduled for ' + absTime(res.send_at) + '.';
+        if (res.filed === false) {
+          msg += ' Note: the Sent copy could not be saved.';
+        }
+      }
+      okBox.textContent = msg;
       okBox.classList.remove('hidden');
     }).catch(function (err) {
       if (err.message === 'login') { return; }

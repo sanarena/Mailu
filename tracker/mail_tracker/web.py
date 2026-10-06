@@ -19,6 +19,7 @@ import ssl
 import time
 import urllib.request
 from email.message import EmailMessage
+from email.utils import make_msgid
 from urllib.parse import urlparse, parse_qs
 
 from .sig import link_signature
@@ -48,13 +49,14 @@ def _b64d(text):
 
 class TrackerApp:
     def __init__(self, config, store, geo, auth_fn=None, smtp_fn=None,
-                 schedule_fn=None):
+                 schedule_fn=None, file_fn=None):
         self.config = config
         self.store = store
         self.geo = geo
         self.auth_fn = auth_fn or self._imap_auth
         self.smtp_fn = smtp_fn or self._smtp_send
         self.schedule_fn = schedule_fn or self._scheduler_post
+        self.file_fn = file_fn or self._imap_append
         self.static_dir = os.path.join(os.path.dirname(
             os.path.abspath(__file__)), 'dashboard')
         self._login_fails = {}
@@ -214,6 +216,29 @@ class TrackerApp:
                     pass
         except Exception:
             return False
+
+    def _imap_append(self, user, password, folder, mime):
+        """Stage a copy in folder (Scheduled). Returns True on success."""
+        folder = (folder or 'Scheduled').strip() or 'Scheduled'
+        quoted = '"%s"' % folder.replace('\\', '\\\\').replace('"', '\\"')
+        conn = imaplib.IMAP4_SSL(self.config.imap_host,
+                                 self.config.imap_port, timeout=15)
+        try:
+            conn.login(user, password)
+            typ, _ = conn.select(quoted)
+            if typ != 'OK':
+                conn.create(quoted)
+                try:
+                    conn.subscribe(quoted)
+                except Exception:
+                    pass
+            typ, _ = conn.append(quoted, '\\Seen', None, bytes(mime))
+            return typ == 'OK'
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
 
     def _login_throttled(self, ip):
         now = time.time()
@@ -450,6 +475,12 @@ class TrackerApp:
         msg['To'] = ', '.join(recipients)
         msg['Subject'] = subject
         msg['X-Tracker-Track'] = 'yes' if track else 'no'
+        # Mint the Message-ID at compose time: for scheduled mail the SAME
+        # bytes are stored by the daemon and staged in Scheduled, so the
+        # Scheduled->Sent filing match depends on a stable, shared MID.
+        # (The daemon only injects one when still missing.)
+        domain = user.rsplit('@', 1)[-1] if '@' in user else 'localhost'
+        msg['Message-ID'] = make_msgid(domain=domain)
         msg.set_content(text)
         if send_at is not None:
             try:
@@ -458,9 +489,19 @@ class TrackerApp:
             except Exception as exc:
                 LOG.warning('compose schedule failed for %s: %s', user, exc)
                 return self._json(502, {'error': 'schedule failed, try again'})
+            # Stage the pending copy in Scheduled so the daemon files it to
+            # Sent at send time (webmail parity). Best-effort: the mail IS
+            # scheduled and will deliver; report honestly via filed.
+            folder = getattr(self.config, 'scheduled_folder', 'Scheduled')
+            try:
+                filed = bool(self.file_fn(user, password, folder,
+                                          msg.as_bytes()))
+            except Exception as exc:
+                LOG.warning('compose file failed for %s: %s', user, exc)
+                filed = False
             return self._json(200, {'ok': True,
                                     'scheduled': (res or {}).get('id'),
-                                    'send_at': send_at})
+                                    'send_at': send_at, 'filed': filed})
         try:
             self.smtp_fn(user, password, msg)
         except Exception as exc:

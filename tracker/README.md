@@ -61,7 +61,7 @@ resolves to a provider datacenter - the same caveat every tracker
 - `mail_tracker/server.py` - processor, HTTP adapter, janitor, main
 - `mail_tracker/geo.py` + `tools/build_geo.py` - offline GeoIP
 - `mail_tracker/ua.py` - client/device sniffing
-- `tests/` - 102 unit tests (`python3 -m unittest discover -s tracker/tests`
+- `tests/` - 105 unit tests (`python3 -m unittest discover -s tracker/tests`
   from the repo root)
 - `k8s/` - manifests (also mirrored into the Flux repo `mailu/` dir)
 
@@ -73,6 +73,20 @@ See `.env.example`. Required secrets: `SESSION_SECRET`, `HMAC_SECRET`
 
 `DRY_RUN=true` parses and logs every message but never modifies mail
 or writes rows - the safety ramp for first deploy.
+
+## Dashboard compose scheduling
+
+The compose box accepts an optional `send_at` (native datetime
+picker). With `SCHEDULER_URL`/`SCHEDULER_SECRET` set, the tracker
+POSTs the MIME to the `mail-scheduler` daemon instead of sending
+live, then stages the identical bytes in the user's `Scheduled`
+folder over IMAP (best-effort; the `filed` response flag reports
+it). The daemon delivers at send time and files the copy to Sent.
+The Message-ID is minted at compose time so the stored bytes, the
+staged copy and the delivered mail all share one MID — the filing
+match depends on it (see the scheduler README's Message-ID
+contract). Without scheduler env, `send_at` is rejected with
+`scheduling unavailable`.
 
 ## GeoIP data
 

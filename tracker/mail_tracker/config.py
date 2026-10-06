@@ -51,6 +51,7 @@ class Config:
         self.session_hours = _get_int('SESSION_HOURS', 12)
         self.scheduler_url = _get('SCHEDULER_URL', '')
         self.scheduler_secret = _get('SCHEDULER_SECRET', '')
+        self.scheduled_folder = _get('SCHEDULED_FOLDER', 'Scheduled')
 
     @property
     def base_url(self):
