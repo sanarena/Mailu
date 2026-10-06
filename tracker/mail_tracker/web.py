@@ -17,6 +17,7 @@ import os
 import smtplib
 import ssl
 import time
+import urllib.request
 from email.message import EmailMessage
 from urllib.parse import urlparse, parse_qs
 
@@ -46,12 +47,14 @@ def _b64d(text):
 
 
 class TrackerApp:
-    def __init__(self, config, store, geo, auth_fn=None, smtp_fn=None):
+    def __init__(self, config, store, geo, auth_fn=None, smtp_fn=None,
+                 schedule_fn=None):
         self.config = config
         self.store = store
         self.geo = geo
         self.auth_fn = auth_fn or self._imap_auth
         self.smtp_fn = smtp_fn or self._smtp_send
+        self.schedule_fn = schedule_fn or self._scheduler_post
         self.static_dir = os.path.join(os.path.dirname(
             os.path.abspath(__file__)), 'dashboard')
         self._login_fails = {}
@@ -389,6 +392,22 @@ class TrackerApp:
         return self._json(200, {'track': True, 'reason': None})
 
     # -- panel compose -------------------------------------------------
+    def _scheduler_post(self, user, sender, recipients, mime, send_at):
+        url = (getattr(self.config, 'scheduler_url', '') or '').rstrip('/')
+        secret = getattr(self.config, 'scheduler_secret', '') or ''
+        if not url or not secret:
+            raise RuntimeError('scheduling unavailable')
+        payload = json.dumps({
+            'user': user, 'sender': sender, 'recipients': recipients,
+            'mime_b64': base64.b64encode(bytes(mime)).decode(),
+            'send_at': int(send_at)}).encode()
+        req = urllib.request.Request(
+            url + '/v1/scheduled', data=payload,
+            headers={'Content-Type': 'application/json',
+                     'X-Scheduler-Secret': secret})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode())
+
     def _smtp_send(self, user, password, message):
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port,
@@ -407,12 +426,23 @@ class TrackerApp:
         text = data.get('body') or ''
         track = bool(data.get('track', True))
         password = data.get('password') or ''
+        send_at = data.get('send_at')
         if not recipients or len(recipients) > 20:
             return self._json(400, {'error': '1-20 recipients required'})
         if any('@' not in r for r in recipients):
             return self._json(400, {'error': 'bad recipient address'})
         if len(subject) > 500 or len(text) > 1024 * 1024:
             return self._json(400, {'error': 'subject/body too long'})
+        if send_at is not None:
+            try:
+                send_at = int(send_at)
+            except (TypeError, ValueError):
+                return self._json(400, {'error': 'bad send_at'})
+            now = int(time.time())
+            if send_at < now + 30 or send_at > now + 366 * 86400:
+                return self._json(400, {'error': 'bad send_at'})
+            if not getattr(self.config, 'scheduler_url', ''):
+                return self._json(400, {'error': 'scheduling unavailable'})
         if not self.auth_fn(user, password):
             return self._json(401, {'error': 'mailbox password required'})
         msg = EmailMessage()
@@ -421,6 +451,16 @@ class TrackerApp:
         msg['Subject'] = subject
         msg['X-Tracker-Track'] = 'yes' if track else 'no'
         msg.set_content(text)
+        if send_at is not None:
+            try:
+                res = self.schedule_fn(user, user, recipients,
+                                       msg.as_bytes(), send_at)
+            except Exception as exc:
+                LOG.warning('compose schedule failed for %s: %s', user, exc)
+                return self._json(502, {'error': 'schedule failed, try again'})
+            return self._json(200, {'ok': True,
+                                    'scheduled': (res or {}).get('id'),
+                                    'send_at': send_at})
         try:
             self.smtp_fn(user, password, msg)
         except Exception as exc:

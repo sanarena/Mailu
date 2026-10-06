@@ -49,6 +49,8 @@ class Config:
         self.max_links = _get_int('MAX_LINKS', 500)
         self.retention_days = _get_int('RETENTION_DAYS', 365)
         self.session_hours = _get_int('SESSION_HOURS', 12)
+        self.scheduler_url = _get('SCHEDULER_URL', '')
+        self.scheduler_secret = _get('SCHEDULER_SECRET', '')
 
     @property
     def base_url(self):

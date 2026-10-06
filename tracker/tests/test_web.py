@@ -272,6 +272,44 @@ class WebTest(unittest.TestCase):
         self.assertEqual(msg['X-Tracker-Track'], 'yes')
         self.assertEqual(msg['Subject'], 'Hi')
 
+    def test_compose_schedule(self):
+        import time as _time
+        scheduled = []
+        self.app.schedule_fn = lambda *a: scheduled.append(a) or {'id': 7}
+        self.app.config.scheduler_url = 'http://scheduler:8080'
+        try:
+            send_at = int(_time.time()) + 600
+            status, _, body = self.call('POST', '/api/compose', {
+                'to': ['c@y.test'], 'subject': 'Later', 'body': 'hi',
+                'track': False, 'password': 'apw', 'send_at': send_at},
+                user='a@x.test')
+            self.assertEqual(status, 200)
+            import json as _json
+            res = _json.loads(body)
+            self.assertEqual((res['scheduled'], res['send_at']), (7, send_at))
+            self.assertEqual(self.sent, [])  # not sent live
+            user, sender, rcpts, mime, sat = scheduled[0]
+            self.assertEqual((user, sender, rcpts, sat),
+                             ('a@x.test', 'a@x.test', ['c@y.test'], send_at))
+            self.assertIn(b'X-Tracker-Track: no', bytes(mime))
+            self.assertIn(b'Subject: Later', bytes(mime))
+            # past send_at rejected
+            status, _, _ = self.call('POST', '/api/compose', {
+                'to': ['c@y.test'], 'subject': 'x', 'body': 'y',
+                'password': 'apw', 'send_at': int(_time.time()) - 10},
+                user='a@x.test')
+            self.assertEqual(status, 400)
+        finally:
+            del self.app.config.scheduler_url
+
+    def test_compose_schedule_unavailable(self):
+        import time as _time
+        status, _, _ = self.call('POST', '/api/compose', {
+            'to': ['c@y.test'], 'subject': 'x', 'body': 'y',
+            'password': 'apw', 'send_at': int(_time.time()) + 600},
+            user='a@x.test')
+        self.assertEqual(status, 400)
+
     def test_compose_requires_password_and_validates(self):
         status, _, _ = self.call('POST', '/api/compose', {
             'to': ['c@y.test'], 'subject': 'Hi', 'body': 'x',

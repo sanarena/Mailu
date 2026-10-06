@@ -287,15 +287,26 @@
     okBox.classList.add('hidden');
     var to = $('compose-to').value.split(',').map(function (s) { return s.trim(); })
       .filter(function (s) { return s.length > 0; });
-    api('POST', '/api/compose', {
+    var payload = {
       to: to,
       subject: $('compose-subject').value,
       body: $('compose-body').value,
       track: $('compose-track').checked,
       password: $('compose-pass').value
-    }).then(function () {
+    };
+    var later = $('compose-send-at').value;
+    if (later) {
+      var epoch = Math.floor(new Date(later).getTime() / 1000);
+      if (!isNaN(epoch)) {
+        payload.send_at = epoch;
+      }
+    }
+    api('POST', '/api/compose', payload).then(function (res) {
       $('compose-pass').value = '';
-      okBox.textContent = 'Sent.';
+      $('compose-send-at').value = '';
+      okBox.textContent = res && res.send_at
+        ? 'Scheduled for ' + absTime(res.send_at) + '.'
+        : 'Sent.';
       okBox.classList.remove('hidden');
     }).catch(function (err) {
       if (err.message === 'login') { return; }
