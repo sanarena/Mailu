@@ -198,11 +198,22 @@ class mail_scheduler extends rcube_plugin
         }
 
         $done = [];
+        $attempted = 0;
+        $synthetic = 0;
         foreach (array_filter(explode(',', $uids)) as $uid) {
             $mid = $this->message_id_of($uid, $mbox);
             if ($mid === '') {
                 continue;
             }
+            // Roundcube reports 'mid:<seq>' for mails WITHOUT a Message-ID
+            // header (rcube_imap_generic). It matches nothing on the wire,
+            // so snoozing it would strand the mail in Snoozed: refuse with
+            // a clear message instead of a bogus scheduler row.
+            if (stripos($mid, 'mid:') === 0) {
+                $synthetic++;
+                continue;
+            }
+            $attempted++;
             $res = $this->api('POST', '/v1/snoozes', [
                 'user' => $user, 'message_id' => $mid,
                 'folder' => $mbox, 'wake_at' => $wake,
@@ -215,6 +226,9 @@ class mail_scheduler extends rcube_plugin
         if ($done) {
             $this->rc->get_storage()->move_message($done, $snooze_folder, $mbox);
             $this->rc->output->show_message('mail_scheduler.snoozed', 'confirmation');
+        }
+        elseif ($synthetic > 0 && $attempted === 0) {
+            $this->rc->output->show_message('mail_scheduler.nomid', 'error');
         }
         else {
             $this->rc->output->show_message('mail_scheduler.schedulererror', 'error');
@@ -289,6 +303,17 @@ class mail_scheduler extends rcube_plugin
             $args['abort'] = true;
             $args['result'] = false;
             $args['error'] = $this->gettext('invalidtime');
+            return $args;
+        }
+
+        // The pending copy MUST wait in Scheduled (filed via _store_target).
+        // Roundcube silently falls back to Sent when the target folder does
+        // not exist, which would fake a Sent copy before the mail goes out.
+        $scheduled_folder = $this->rc->config->get('scheduler_scheduled_folder', 'Scheduled');
+        if (!$this->ensure_folder($scheduled_folder)) {
+            $args['abort'] = true;
+            $args['result'] = false;
+            $args['error'] = $this->gettext('foldererror');
             return $args;
         }
 

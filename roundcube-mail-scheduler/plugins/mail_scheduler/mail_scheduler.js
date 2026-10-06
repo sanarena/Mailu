@@ -129,8 +129,15 @@
 
   function toggleButtons() {
     var has = selection() !== '';
-    rcmail.enable_command('plugin.scheduler.snooze', has);
-    rcmail.enable_command('plugin.scheduler.unsnooze', has);
+    // Scope by folder: Snooze everywhere except inside Snoozed, Wake now
+    // only inside Snoozed (waking from elsewhere would move mail to INBOX
+    // unexpectedly). Folder compare is case-insensitive like IMAP.
+    var mbox = String(rcmail.env.mailbox || '').toLowerCase();
+    var snoozed = String(
+      rcmail.env.scheduler_snooze_folder || 'Snoozed').toLowerCase();
+    var inSnoozed = mbox !== '' && mbox === snoozed;
+    rcmail.enable_command('plugin.scheduler.snooze', has && !inSnoozed);
+    rcmail.enable_command('plugin.scheduler.unsnooze', has && inSnoozed);
   }
 
   rcmail.addEventListener('init', function() {
@@ -140,6 +147,13 @@
     toggleButtons();
     // custom commands start disabled: the compose button is always on
     rcmail.enable_command('plugin.scheduler.sendlater', true);
+    // allowlist for compose: without this, clicking Send later on a dirty
+    // compose form triggers the unsaved-changes "discard?" guard instead
+    // of our handler (app.js command() checks env.compose_commands).
+    if (rcmail.env.compose_commands
+      && rcmail.env.compose_commands.indexOf('plugin.scheduler.sendlater') < 0) {
+      rcmail.env.compose_commands.push('plugin.scheduler.sendlater');
+    }
   });
   rcmail.addEventListener('listupdate', toggleButtons);
 
@@ -184,28 +198,54 @@
     return el;
   }
 
+  function storeTargetControls() {
+    // The visible select is rendered noform (display only); the submitted
+    // value lives in a hidden input that core syncs on user change events.
+    // A bare .value assignment bypasses that sync, so set both + trigger.
+    return {
+      sel: document.getElementById('compose-store-target')
+        || document.querySelector('select[name="_store_target"]'),
+      hidden: document.querySelector('#form input[name="_store_target"]')
+        || document.querySelector('form input[name="_store_target"]')
+    };
+  }
+
   function setStoreTarget(folder) {
-    var sel = document.querySelector('select[name="_store_target"]');
-    if (!sel) {
+    var c = storeTargetControls();
+    if (!c.sel && !c.hidden) {
       return;
     }
     if (storeOriginal === null) {
-      storeOriginal = sel.value;
+      storeOriginal = c.hidden ? c.hidden.value
+        : (c.sel ? c.sel.value : '');
     }
-    var found = false;
-    for (var i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === folder) {
-        found = true;
-        break;
+    if (c.sel) {
+      var found = false;
+      for (var i = 0; i < c.sel.options.length; i++) {
+        if (c.sel.options[i].value === folder) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        var opt = document.createElement('option');
+        opt.value = folder;
+        opt.textContent = folder;
+        c.sel.appendChild(opt);
+      }
+      c.sel.value = folder;
+    }
+    if (c.hidden) {
+      c.hidden.value = folder;
+    }
+    if (c.sel) {
+      if (typeof jQuery !== 'undefined') {
+        jQuery(c.sel).trigger('change');
+      }
+      else if (typeof Event !== 'undefined') {
+        c.sel.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }
-    if (!found) {
-      var opt = document.createElement('option');
-      opt.value = folder;
-      opt.textContent = folder;
-      sel.appendChild(opt);
-    }
-    sel.value = folder;
   }
 
   function clearSchedule() {
@@ -213,15 +253,25 @@
     if (el) {
       el.parentNode.removeChild(el);
     }
-    var sel = document.querySelector('select[name="_store_target"]');
-    if (sel && storeOriginal !== null) {
-      sel.value = storeOriginal;
+    if (storeOriginal !== null) {
+      var c = storeTargetControls();
+      if (c.sel) {
+        c.sel.value = storeOriginal;
+      }
+      if (c.hidden) {
+        c.hidden.value = storeOriginal;
+      }
+      if (c.sel && typeof jQuery !== 'undefined') {
+        jQuery(c.sel).trigger('change');
+      }
     }
     updateSendLaterButton(null);
   }
 
   function updateSendLaterButton(when) {
-    var btn = document.querySelector('[data-command="plugin.scheduler.sendlater"] .inner')
+    // toolbar links carry no data-command attr, only an onclick hook
+    var btn = document.querySelector('a[onclick*="plugin.scheduler.sendlater"] .inner')
+      || document.querySelector('[data-command="plugin.scheduler.sendlater"] .inner')
       || document.querySelector('[data-command="plugin.scheduler.sendlater"]');
     if (!btn) {
       return;
@@ -264,7 +314,8 @@
         el.value = String(epoch);
         setStoreTarget('Scheduled');
         updateSendLaterButton(when);
-        rcmail.command('send');
+        // props must be non-null: command_handler reads props.nocheck
+        rcmail.command('send', '');
       });
   });
 })();

@@ -23,3 +23,4 @@ $labels['invalid'] = 'Invalid request. Please try again.';
 $labels['invalidtime'] = 'Pick a time at least a minute in the future.';
 $labels['foldererror'] = 'Could not create the folder. Please try again.';
 $labels['schedulererror'] = 'The scheduler is unreachable. Nothing was scheduled; please try again.';
+$labels['nomid'] = 'This message has no Message-ID header, so it cannot be snoozed or matched later.';
