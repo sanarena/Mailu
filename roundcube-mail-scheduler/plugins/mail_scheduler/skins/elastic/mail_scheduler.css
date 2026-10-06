@@ -1,0 +1,12 @@
+/* mail_scheduler - tiny additions; layout comes from Elastic/Bootstrap. */
+.scheduler-dialog .list-group-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  cursor: pointer;
+}
+
+.scheduler-dialog .list-group-item .text-muted {
+  white-space: nowrap;
+}
