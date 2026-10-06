@@ -61,7 +61,7 @@ resolves to a provider datacenter - the same caveat every tracker
 - `mail_tracker/server.py` - processor, HTTP adapter, janitor, main
 - `mail_tracker/geo.py` + `tools/build_geo.py` - offline GeoIP
 - `mail_tracker/ua.py` - client/device sniffing
-- `tests/` - 90+ unit tests (`python3 -m unittest discover -s tracker/tests`
+- `tests/` - 102 unit tests (`python3 -m unittest discover -s tracker/tests`
   from the repo root)
 - `k8s/` - manifests (also mirrored into the Flux repo `mailu/` dir)
 
@@ -91,9 +91,22 @@ unknown and IP/client are still logged.
 
 ## Operations
 
+- Build (arm64, matches the cluster): on the Pi build host
+  (`DOCKER_HOST=tcp://192.168.178.85:2376`)
+  `docker build -t sanarena/mailu-tracker:<ver> tracker && docker push ...`.
+  Verify `docker image inspect --format '{{.Architecture}}'`. Current
+  live version: see `flux/mailu/tracker-deployment.yaml` image tag.
+- Deploy: manifests live in the Flux repo `mailu/tracker-*.yaml`;
+  push to `origin/main`, then `flux reconcile source git flux-system`
+  and `flux reconcile kustomization mailu -n hodlticker`. Postfix
+  picks up `smtpd_milters` from the overrides ConfigMap **at boot
+  only** - after a ConfigMap change, `kubectl rollout restart
+  deploy/mail-mailu-postfix` (a Flux sync alone does not restart it).
 - Rollout: deploy with `DRY_RUN=true`, watch tracker logs for
   `tracked=yes/no reason=...` on live traffic, then set
-  `DRY_RUN=false` and redeploy.
+  `DRY_RUN=false` and redeploy. Debug helpers: `MILTER_DEBUG=true`
+  logs every milter packet; `HEADER_ONLY=true` adds headers without
+  touching bodies.
 - Bypass (tracker outage): postfix tempfails+retries while the
   milter is unreachable (same exposure class as rspamd, which is
   also in-path). To bypass instantly, remove the
@@ -104,3 +117,16 @@ unknown and IP/client are still logged.
   are token-disabled so stale pixels stop logging.
 - Rollback: delete the postfix override mount; previously tracked
   mail keeps working (pixels/logins resolve while the tracker runs).
+- GeoIP needs true client IPs end to end: ingress Service
+  `externalTrafficPolicy: Local`, Hetzner LB `uses-proxyprotocol`,
+  and haproxy-ingress ConfigMap `proxy-protocol` listing the LB
+  source CIDR (see the cluster runbook). Without all three, events
+  log SNAT/LB addresses and geo stays empty.
+- Milter wire notes (live incidents, encoded in `PostfixPhaseTest`
+  and the chgheader tests - do not regress): postfix reads NO reply
+  for macro/abort commands (answering desyncs the session and EOM
+  actions are silently dropped); text-to-multipart conversion must
+  flip `Content-Type` via `SMFIR_CHGHEADER` (`m`: index u32be, name
+  NUL, value NUL, empty value deletes) since replbody cannot touch
+  headers; keep all replbody chunks contiguous first
+  (order `b,m,h,a`).
