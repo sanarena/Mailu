@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mail-tracker
+  namespace: mail
+  annotations:
+    kubernetes.io/ingress.class: haproxy
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts: [track.arminnikdel.com]
+      secretName: mail-tracker-tls
+  rules:
+    - host: track.arminnikdel.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mail-tracker
+                port:
+                  number: 8080

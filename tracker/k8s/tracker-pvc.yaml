@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mail-tracker-data
+  namespace: mail
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-mailu
+  resources:
+    requests:
+      storage: 5Gi
