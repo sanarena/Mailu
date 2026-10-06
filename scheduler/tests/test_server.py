@@ -265,13 +265,53 @@ class PollerTest(unittest.TestCase):
         row = self.store.list_snoozes('a@x.test')[0]
         self.assertEqual(row['status'], 'done')
 
-    def test_wake_missing_message_marks_done(self):
+    def test_wake_missing_retries_then_done(self):
         now = int(time.time())
         FakeIMAP.folders = {'Snoozed': {}}
-        self.store.add_snooze('a@x.test', '<gone>', 'INBOX', now - 5)
+        sid = self.store.add_snooze('a@x.test', '<gone>', 'INBOX', now - 5)
+        # fresh miss = likely index lag: stays pending, retried
+        self.assertEqual(self.poller.poll_once(now), (0, 0))
+        row = self.store.list_snoozes('a@x.test')[0]
+        self.assertEqual(row['status'], 'pending')
+        # past the grace window a miss is genuine: complete it
+        self.store._db.execute(
+            'UPDATE snoozes SET created_at=? WHERE id=?',
+            (now - 31 * 60, sid))
+        self.store._db.commit()
         self.assertEqual(self.poller.poll_once(now), (0, 1))
         row = self.store.list_snoozes('a@x.test')[0]
         self.assertEqual(row['status'], 'done')
+
+    def test_filing_retries_then_gives_up(self):
+        now = int(time.time())
+        FakeIMAP.folders = {'Scheduled': {}, 'Sent': {}}
+        sid = self.store.add_scheduled('a@x.test', 'a@x.test', ['b@y.test'],
+                                       'Hi', MIME, now - 5)
+        self.poller.poll_once(now)  # sends; copy not visible yet
+        row = self.store._db.execute(
+            'SELECT status, filed_at FROM scheduled WHERE id=?',
+            (sid,)).fetchone()
+        self.assertEqual((row[0], row[1]), ('sent', None))
+        # copy appears later -> filed on a later poll
+        FakeIMAP.folders['Scheduled'] = {'<m1@x>': 1}
+        self.poller.poll_once(now + 60)
+        row = self.store._db.execute(
+            'SELECT filed_at FROM scheduled WHERE id=?', (sid,)).fetchone()
+        self.assertEqual(row[0], now + 60)
+        self.assertEqual(FakeIMAP.moves,
+                         [('a@x.test', 'Scheduled', 'Sent', 1)])
+        # ...but an old row whose copy never shows is closed out
+        sid2 = self.store.add_scheduled('a@x.test', 'a@x.test', ['b@y.test'],
+                                        'Hi', MIME, now - 5)
+        FakeIMAP.folders['Scheduled'] = {}
+        self.store._db.execute(
+            "UPDATE scheduled SET status='sent', sent_at=?, created_at=?"
+            ' WHERE id=?', (now - 3600, now - 3600, sid2))
+        self.store._db.commit()
+        self.poller.poll_once(now)
+        row = self.store._db.execute(
+            'SELECT filed_at FROM scheduled WHERE id=?', (sid2,)).fetchone()
+        self.assertIsNotNone(row[0])
 
     def test_sent_folder_list_forms(self):
         from scheduler.sched.server import _list_name

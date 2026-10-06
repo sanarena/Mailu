@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS scheduled(
   next_try INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   sent_at INTEGER,
+  filed_at INTEGER,
   error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_due
@@ -52,6 +53,11 @@ class Store:
             self._db.execute('PRAGMA journal_mode=WAL')
             self._db.execute('PRAGMA foreign_keys=ON')
             self._db.executescript(SCHEMA)
+            try:
+                self._db.execute('ALTER TABLE scheduled'
+                                 ' ADD COLUMN filed_at INTEGER')
+            except sqlite3.OperationalError:
+                pass  # already migrated
             self._db.commit()
 
     def close(self):
@@ -117,6 +123,19 @@ class Store:
                 "UPDATE scheduled SET status='failed', error=?"
                 " WHERE id=? AND status='queued'",
                 ((error or '')[:500], sid))
+            self._db.commit()
+
+    def sent_unfiled(self, now, limit=20):
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM scheduled WHERE status='sent'"
+                " AND filed_at IS NULL AND sent_at>? ORDER BY sent_at"
+                " LIMIT ?", (now - 24 * 3600, limit))]
+
+    def mark_filed(self, sid, now):
+        with self._lock:
+            self._db.execute(
+                'UPDATE scheduled SET filed_at=? WHERE id=?', (now, sid))
             self._db.commit()
 
     # -- snoozes -----------------------------------------------------

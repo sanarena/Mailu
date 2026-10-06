@@ -25,6 +25,10 @@ LOG = logging.getLogger('scheduler')
 POLICY = policy.default
 RETRY_DELAYS = (300, 1800, 7200)
 GIVE_UP_AFTER = 24 * 3600
+# Dovecot SEARCH can lag minutes behind APPEND/MOVE (live incident:
+# fresh mail invisible to search for ~15 min on a shared index).
+# Treat "not found" as transient until the row is this old.
+NOT_FOUND_GRACE = 30 * 60
 
 
 def _norm_email(value):
@@ -168,6 +172,7 @@ class Poller:
         for row in self.store.due_snoozes(now):
             if self._wake_due(row, now):
                 woken += 1
+        self._file_copies(now)
         return sent, woken
 
     def _send_due(self, row, now):
@@ -195,26 +200,38 @@ class Poller:
             return False
         self.store.mark_sent(sid, now)
         LOG.info('scheduled %d sent to %d rcpts', sid, len(recipients))
-        self._file_sent_copy(row)
         return True
 
-    def _file_sent_copy(self, row):
-        """Best-effort: move the user's Scheduled-folder copy to Sent."""
-        try:
-            parsed = email.message_from_bytes(bytes(row['mime']),
-                                              policy=POLICY)
-            message_id = (parsed.get('Message-ID') or '').strip()
-            if not message_id:
-                return
-            sent = self.imap.sent_folder(row['user'])
-            moved = self.imap.move_matches(
-                row['user'], message_id, self.config.scheduled_folder,
-                sent)
-            LOG.info('scheduled %d filed %s copy to %s', row['id'], moved,
-                     sent)
-        except Exception as exc:
-            LOG.warning('scheduled %d file-to-sent failed: %s', row['id'],
-                        exc)
+    def _file_copies(self, now):
+        """File Scheduled-folder copies to Sent. Retried across polls:
+        a search miss on a fresh row is likely index lag, not absence."""
+        for row in self.store.sent_unfiled(now):
+            sid = row['id']
+            try:
+                parsed = email.message_from_bytes(bytes(row['mime']),
+                                                  policy=POLICY)
+                message_id = (parsed.get('Message-ID') or '').strip()
+                if not message_id:
+                    self.store.mark_filed(sid, now)
+                    continue
+                sent = self.imap.sent_folder(row['user'])
+                moved = self.imap.move_matches(
+                    row['user'], message_id, self.config.scheduled_folder,
+                    sent)
+            except Exception as exc:
+                LOG.warning('scheduled %d file-to-sent failed: %s', sid,
+                            exc)
+                continue
+            if moved:
+                LOG.info('scheduled %d filed %s copy to %s', sid, moved,
+                         sent)
+                self.store.mark_filed(sid, now)
+            elif now - row['created_at'] > NOT_FOUND_GRACE:
+                LOG.info('scheduled %d copy gone (user deleted?), done',
+                         sid)
+                self.store.mark_filed(sid, now)
+            else:
+                LOG.info('scheduled %d copy not visible yet, retrying', sid)
 
     def _wake_due(self, row, now):
         sid = row['id']
@@ -222,22 +239,19 @@ class Poller:
             moved = self.imap.move_matches(row['user'], row['message_id'],
                                            self.config.snooze_folder,
                                            row['folder'] or 'INBOX')
-            if moved is None:
-                # source folder gone; retry later (transient) unless the
-                # row is stale, in which case there is nothing to wake.
-                if now - row['created_at'] > GIVE_UP_AFTER:
+            if moved is None or moved == 0:
+                # Missing source folder/message: transient (index lag)
+                # while the row is fresh, genuine (user moved or
+                # deleted it) once past the grace window.
+                if now - row['created_at'] > NOT_FOUND_GRACE:
+                    LOG.info('snooze %d nothing to wake (moved/deleted)',
+                             sid)
                     self.store.mark_snooze_done(sid, now)
                     return True
-                LOG.warning('snooze %d source folder missing, retrying',
-                            sid)
+                LOG.info('snooze %d not visible yet, retrying', sid)
                 return False
-            if moved == 0:
-                # try the fallback: maybe the folder name differs in
-                # case or the user already moved it back manually
-                LOG.info('snooze %d nothing to wake (moved/deleted)', sid)
-            else:
-                LOG.info('snooze %d woke %d message(s) to %s', sid, moved,
-                         row['folder'])
+            LOG.info('snooze %d woke %d message(s) to %s', sid, moved,
+                     row['folder'])
             self.store.mark_snooze_done(sid, now)
             return True
         except Exception as exc:
