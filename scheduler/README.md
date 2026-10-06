@@ -40,7 +40,32 @@ How it works:
 
 Validation: sender must be local, 1–200 recipients, MIME ≤
 `MAX_MIME_BYTES` and parseable, times within +30s..`MAX_FUTURE_DAYS`.
-Failed sends retry with backoff (5m/30m/2h) and give up after 24h.
+Snooze `message_id` must be a real header value: `mid:`-prefixed
+ids are rejected with 400 (see below). Failed sends retry with
+backoff (5m/30m/2h) and give up after 24h.
+
+## Message-ID contract
+
+All matching (snooze wake, Scheduled→Sent filing) is by exact
+Message-ID, compared client-side over ALL+FETCH because dovecot's
+`HEADER Message-ID` SEARCH misses exact mids (FTS quirk) and SUBJECT
+search lags ~15min. Consequences, all enforced:
+
+- Roundcube reports `mid:<seq>` for mails WITHOUT a Message-ID
+  header (`rcube_imap_generic` synthesizes it). It matches nothing on
+  the wire, so the API rejects it and clients must refuse to schedule
+  such mail with a clear message — never record it.
+- The daemon injects a generated Message-ID into scheduled MIME that
+  lacks one (byte-level header insert, body untouched) and persists
+  the updated bytes BEFORE submitting, so retries reuse the same MID.
+  Clients that stage their own Scheduled copy must therefore mint
+  the MID at compose time and file the identical bytes, or filing
+  can never match.
+- Postfix runs `always_add_missing_headers = yes` (Flux overrides
+  ConfigMap) so every new submission carries a real MID.
+- Fresh rows that match nothing are retried across polls
+  (`NOT_FOUND_GRACE`, 30min) to ride out index lag; only then is a
+  wake/filing completed as gone.
 
 ## Operations
 

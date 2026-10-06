@@ -109,6 +109,14 @@ class Store:
                 " WHERE id=? AND status='queued'", (now, sid))
             self._db.commit()
 
+    def update_mime(self, sid, mime):
+        """Replace stored MIME (e.g. after Message-ID injection)."""
+        with self._lock:
+            self._db.execute(
+                "UPDATE scheduled SET mime=? WHERE id=?",
+                (bytes(mime), sid))
+            self._db.commit()
+
     def mark_schedule_retry(self, sid, next_try, error):
         with self._lock:
             self._db.execute(

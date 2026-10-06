@@ -10,7 +10,8 @@ import unittest
 sys.path.insert(0, ".")
 
 from scheduler.sched.db import Store
-from scheduler.sched.server import ImapWorker, Poller, SchedulerApp
+from scheduler.sched.server import (ImapWorker, Poller, SchedulerApp,
+                                    ensure_message_id)
 
 
 class FakeConfig:
@@ -30,6 +31,9 @@ class FakeConfig:
 
 MIME = (b'From: a@x.test\r\nTo: b@y.test\r\nSubject: Hi\r\n'
         b'Message-ID: <m1@x>\r\n\r\nhello\r\n')
+
+MIME_NOMID = (b'From: a@x.test\r\nTo: b@y.test\r\nSubject: NoMid\r\n'
+              b'\r\nhello\r\n')
 
 
 def sched_payload(**over):
@@ -213,6 +217,20 @@ class ApiTest(unittest.TestCase):
                                   'folder': 'INBOX', 'wake_at': now + 60})
         self.assertEqual(status, 400)
 
+    def test_snooze_rejects_synthetic_mid(self):
+        # Roundcube reports 'mid:<seq>' for mails without a Message-ID;
+        # such rows could never match at wake time -> fail fast.
+        now = int(time.time())
+        for bad in ('mid:1', 'MID:9', 'mid:2417'):
+            status, _, body = self.call(
+                'POST', '/v1/snoozes',
+                {'user': 'a@x.test', 'message_id': bad,
+                 'folder': 'INBOX', 'wake_at': now + 120})
+            self.assertEqual(status, 400)
+            self.assertEqual(json.loads(body)['error'], 'bad message-id')
+        _, _, body = self.call('GET', '/v1/snoozes?user=a@x.test')
+        self.assertEqual(json.loads(body)['snoozes'], [])
+
 
 class PollerTest(unittest.TestCase):
     def setUp(self):
@@ -243,6 +261,36 @@ class PollerTest(unittest.TestCase):
                          [('a@x.test', 'Scheduled', 'Sent', 1)])
         # second poll: nothing due
         self.assertEqual(self.poller.poll_once(now), (0, 0))
+
+    def test_send_injects_mid_when_missing(self):
+        now = int(time.time())
+        FakeIMAP.folders = {}
+        sid = self.store.add_scheduled('a@x.test', 'a@x.test', ['b@y.test'],
+                                       'NoMid', MIME_NOMID, now - 5)
+        sent, _ = self.poller.poll_once(now)
+        self.assertEqual(sent, 1)
+        _, _, mime = FakeSMTP.sent[0]
+        self.assertRegex(mime.decode('ascii'),
+                         r'Message-ID: <[^<>]+@x\.test>')
+        # body untouched, stored copy updated so filing can match later
+        self.assertTrue(mime.endswith(b'hello\r\n'))
+        row = self.store._db.execute(
+            'SELECT mime FROM scheduled WHERE id=?', (sid,)).fetchone()
+        self.assertIn(b'Message-ID: <', bytes(row['mime']))
+        sent_mid = mime.split(b'Message-ID: ')[1].split(b'\r\n')[0]
+        stored_mid = bytes(row['mime']).split(
+            b'Message-ID: ')[1].split(b'\r\n')[0]
+        self.assertEqual(sent_mid, stored_mid)
+
+    def test_send_keeps_existing_mid(self):
+        now = int(time.time())
+        FakeIMAP.folders = {'Scheduled': {1: '<m1@x>'}}
+        self.store.add_scheduled('a@x.test', 'a@x.test', ['b@y.test'],
+                                 'Hi', MIME, now - 5)
+        self.assertEqual(self.poller.poll_once(now), (1, 0))
+        _, _, mime = FakeSMTP.sent[0]
+        self.assertEqual(mime.count(b'Message-ID:'), 1)
+        self.assertIn(b'Message-ID: <m1@x>', mime)
 
     def test_submit_failure_retries_then_fails(self):
         class Boom(FakeSMTP):
@@ -349,6 +397,35 @@ class PollerTest(unittest.TestCase):
         self.store.add_snooze('a@x.test', '<m9>', 'INBOX', now - 5)
         self.assertEqual(self.poller.poll_once(now), (0, 1))
         self.assertEqual(FakeIMAP.moves, [('a@x.test', 'Snoozed', 'INBOX', 1)])
+
+
+class EnsureMidTest(unittest.TestCase):
+    def test_injects_crlf(self):
+        raw = b'Subject: x\r\nTo: a@b\r\n\r\nbody'
+        out, mid = ensure_message_id(raw, 'd.test')
+        self.assertTrue(mid.startswith('<') and mid.endswith('@d.test>'))
+        self.assertEqual(
+            out, b'Subject: x\r\nTo: a@b\r\nMessage-ID: ' + mid.encode()
+            + b'\r\n\r\nbody')
+
+    def test_injects_lf(self):
+        raw = b'Subject: x\n\nbody'
+        out, mid = ensure_message_id(raw, 'd.test')
+        self.assertIn(b'\nMessage-ID: ' + mid.encode() + b'\n\nbody', out)
+
+    def test_keeps_existing_case_insensitive(self):
+        raw = b'subject: x\r\nmessage-id: <k@e>\r\n\r\nb'
+        out, mid = ensure_message_id(raw, 'd.test')
+        self.assertEqual((out, mid), (raw, None))
+
+    def test_malformed_untouched(self):
+        raw = b'no headers at all'
+        self.assertEqual(ensure_message_id(raw, 'd.test'), (raw, None))
+
+    def test_empty_domain_falls_back(self):
+        out, mid = ensure_message_id(b'A: b\r\n\r\nc', '')
+        self.assertTrue(mid.endswith('@localhost>'))
+        self.assertIn(b'Message-ID: ', out)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ import smtplib
 import threading
 import time
 from email import policy
+from email.utils import make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -44,6 +45,33 @@ def _valid_email(value):
     if not local or '.' not in domain:
         return ''
     return value
+
+
+def ensure_message_id(mime, domain):
+    """Return (mime_bytes, added_mid_or_None).
+
+    Byte-level injection: inserts a generated Message-ID header at the
+    end of the header block WITHOUT re-serializing the message, so the
+    body bytes (MIME parts, encodings) are untouched. Returns the input
+    unchanged when a Message-ID already exists or no header/body split
+    is found (malformed input: send as-is, postfix adds one).
+    """
+    raw = bytes(mime)
+    head, found = raw, False
+    for sep in (b'\r\n\r\n', b'\n\n'):
+        idx = raw.find(sep)
+        if idx != -1:
+            head, eol = raw[:idx], sep[:len(sep) // 2]
+            found = True
+            break
+    if not found:
+        return raw, None
+    for line in head.split(eol):
+        if line.lower().startswith(b'message-id:'):
+            return raw, None
+    mid = make_msgid(domain=domain or 'localhost')
+    header = b'Message-ID: ' + mid.encode('ascii')
+    return head + eol + header + raw[len(head):], mid
 
 
 def parse_recipients(raw_list, max_recipients):
@@ -205,8 +233,17 @@ class Poller:
         if recipients is None:
             self.store.mark_schedule_failed(sid, 'bad recipients')
             return False
+        # Guarantee a Message-ID we know: without one the Scheduled->Sent
+        # filing match (and any downstream threading) is impossible.
+        # Persist before submit so retries reuse the same MID.
+        mime = bytes(row['mime'])
+        sender = row['sender'] or ''
+        domain = sender.rsplit('@', 1)[-1] if '@' in sender else ''
+        mime, added = ensure_message_id(mime, domain)
+        if added is not None:
+            self.store.update_mime(sid, mime)
         try:
-            self._submit(row['sender'], recipients, row['mime'])
+            self._submit(row['sender'], recipients, mime)
         except Exception as exc:
             age = now - row['created_at']
             if age > GIVE_UP_AFTER or row['attempts'] >= 10:
@@ -398,10 +435,15 @@ class SchedulerApp:
         user = _valid_email(data.get('user'))
         message_id = (data.get('message_id') or '').strip()
         folder = (data.get('folder') or 'INBOX').strip() or 'INBOX'
-        if (not user or not message_id or len(message_id) > 500 or
-                '\n' in message_id or '\r' in message_id or
-                len(folder) > 200 or '\n' in folder or '\r' in folder):
+        if not user or len(folder) > 200 or '\n' in folder or '\r' in folder:
             return self._json(400, {'error': 'bad snooze'})
+        # Roundcube synthesizes 'mid:<seq>' for mails WITHOUT a Message-ID
+        # header (rcube_imap_generic). Such rows could never match at wake
+        # time, stranding the mail in Snoozed: reject, fail fast.
+        if (not message_id or len(message_id) > 500 or
+                '\n' in message_id or '\r' in message_id or
+                message_id.lower().startswith('mid:')):
+            return self._json(400, {'error': 'bad message-id'})
         wake_at = self._window(data.get('wake_at'))
         if wake_at is None:
             return self._json(400, {'error': 'bad wake_at'})
