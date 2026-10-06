@@ -19,6 +19,7 @@ PIXEL_TEMPLATE = ('<img src="{url}" width="1" height="1" border="0" alt=""'
 
 _HREF_RE = re.compile(
     r'''href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))''', re.IGNORECASE)
+_BARE_URL_RE = re.compile(r'https?://[^\s<>"\']+')
 _BODY_CLOSE_RE = re.compile(r'</body\s*>', re.IGNORECASE)
 _HTML_CLOSE_RE = re.compile(r'</html\s*>', re.IGNORECASE)
 
@@ -78,10 +79,61 @@ def inject_pixel(html, pixel_html):
     return html[:match.start()] + pixel_html + html[match.start():]
 
 
-def text_to_html(text, pixel_html):
-    escaped = _html.escape(text).replace('\n', '<br />\n')
+def _strip_trailing_punct(url):
+    """Split off trailing punctuation that is not part of the URL.
+    Returns (url, tail). A closing bracket only splits when unbalanced
+    so wikipedia-style .../X_(y) links survive whole."""
+    tail = ''
+    while url:
+        ch = url[-1]
+        if ch in '.,;:!?\'"':
+            tail = ch + tail
+            url = url[:-1]
+        elif ch == ')' and url.count('(') < url.count(')'):
+            tail = ')' + tail
+            url = url[:-1]
+        elif ch == ']' and url.count('[') < url.count(']'):
+            tail = ']' + tail
+            url = url[:-1]
+        else:
+            break
+    return url, tail
+
+
+def linkify_text(text, rewrite, self_host, max_links, collected):
+    """Escape text to HTML and linkify bare http(s) URLs via
+    rewrite(url, idx)->tracked_url. Same skip rules as rewrite_links
+    (self-host, cap); unlinked URLs stay as plain escaped text."""
+    out = []
+    pos = 0
+    for match in _BARE_URL_RE.finditer(text):
+        url, tail = _strip_trailing_punct(match.group(0))
+        out.append(_html.escape(text[pos:match.start()]))
+        pos = match.end()
+        low = url.lower()
+        skip = (not url or len(collected) >= max_links or
+                (self_host and self_host.lower() in low.split('/')[2:3]))
+        if skip:
+            out.append(_html.escape(match.group(0)))
+            continue
+        idx = len(collected)
+        collected.append(url)
+        out.append(f'<a href="{_html.escape(rewrite(url, idx), quote=True)}">'
+                   f'{_html.escape(url)}</a>{_html.escape(tail)}')
+    out.append(_html.escape(text[pos:]))
+    return ''.join(out).replace('\n', '<br />\n')
+
+
+def text_to_html(text, pixel_html, rewrite=None, self_host='',
+                 max_links=500, collected=None):
+    """Plain-text to HTML alternative. With rewrite+collected, bare URLs
+    are linkified to tracked links; the plain part keeps originals."""
+    if rewrite is not None and collected is not None:
+        body = linkify_text(text, rewrite, self_host, max_links, collected)
+    else:
+        body = _html.escape(text).replace('\n', '<br />\n')
     return (f'<html><body><div style="white-space:pre-wrap;'
-            f'font-family:sans-serif;">{escaped}</div>'
+            f'font-family:sans-serif;">{body}</div>'
             f'{pixel_html}</body></html>')
 
 
@@ -200,8 +252,9 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
             if text is not None:
                 html_part = EmailMessage(policy=POLICY)
                 html_part.set_content(
-                    text_to_html(text, pixel_html), subtype='html',
-                    charset='utf-8')
+                    text_to_html(text, pixel_html, rewrite_link,
+                                 self_host, max_links, collected),
+                    subtype='html', charset='utf-8')
                 msg.attach(html_part)
                 return _split_body(msg), collected, 'ok'
         return None, [], 'no-text-part'
@@ -213,7 +266,9 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
         charset = msg.get_content_charset() or 'utf-8'
         new_msg.set_content(text, subtype='plain', charset=charset)
         new_msg.add_alternative(
-            text_to_html(text, pixel_html), subtype='html', charset='utf-8')
+            text_to_html(text, pixel_html, rewrite_link, self_host,
+                         max_links, collected),
+            subtype='html', charset='utf-8')
         return _split_body(new_msg), collected, 'ok'
     if top_ctype in ('multipart/mixed', 'multipart/related',
                      'multipart/digest', 'multipart/report'):
@@ -225,7 +280,9 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
                 alt = EmailMessage(policy=POLICY)
                 charset = text_part.get_content_charset() or 'utf-8'
                 alt.set_content(text, subtype='plain', charset=charset)
-                alt.add_alternative(text_to_html(text, pixel_html),
+                alt.add_alternative(text_to_html(text, pixel_html,
+                                                  rewrite_link, self_host,
+                                                  max_links, collected),
                                     subtype='html', charset='utf-8')
                 payload = msg.get_payload()
                 payload[i] = alt

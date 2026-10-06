@@ -9,7 +9,7 @@ from email import policy
 
 sys.path.insert(0, ".")
 
-from tracker.mail_tracker.mime import process_body
+from tracker.mail_tracker.mime import linkify_text, process_body
 
 POLICY = policy.default.clone(linesep='\r\n')
 PIXEL = 'https://track.x.test/o/TOKEN.gif'
@@ -127,6 +127,44 @@ class MimeTest(unittest.TestCase):
         decoded = quopri.decodestring(new).decode('utf-8', 'replace')
         self.assertIn('Hello &lt;world&gt;', decoded)  # html escaped
         self.assertIn('/o/TOKEN.gif', decoded)
+
+    def test_plain_text_links_linkified(self):
+        msg = EmailMessage(policy=POLICY)
+        msg.set_content('see https://e.test/landing for details')
+        headers, body = split(msg.as_bytes(policy=POLICY))
+        new, links, reason = process_body(body, headers, PIXEL, rewrite,
+                                          HOST)
+        self.assertEqual(reason, 'ok')
+        self.assertEqual(links, ['https://e.test/landing'])
+        decoded = quopri.decodestring(new).decode('utf-8', 'replace')
+        self.assertIn('<a href="https://track.x.test/c/TOKEN/0?s=sig">'
+                      'https://e.test/landing</a>', decoded)
+        # plain part keeps the readable original
+        self.assertIn(b'see https://e.test/landing for details', new)
+
+    def test_linkify_trailing_punct_and_parens(self):
+        text = ('Visit https://e.test/a. (see https://e.test/b) '
+                'wiki https://e.test/X_(y) end')
+        html = linkify_text(text, rewrite, HOST, 500, [])
+        self.assertIn('<a href="https://track.x.test/c/TOKEN/0?s=sig">'
+                      'https://e.test/a</a>.', html)
+        self.assertIn('(see <a href="https://track.x.test/c/TOKEN/1?s=sig">'
+                      'https://e.test/b</a>)', html)
+        self.assertIn('>https://e.test/X_(y)</a> end', html)
+
+    def test_linkify_skips_self_and_caps(self):
+        collected = []
+        html = linkify_text('a https://track.x.test/o/x.gif b', rewrite,
+                            HOST, 500, collected)
+        self.assertNotIn('<a href', html)
+        self.assertEqual(collected, [])
+        collected = []
+        html = linkify_text('https://a.test/1 https://b.test/2', rewrite,
+                            HOST, 1, collected)
+        self.assertEqual(collected, ['https://a.test/1'])
+        # second URL left as plain text once the cap is hit
+        rest = html.split('</a> ', 1)[1]
+        self.assertEqual(rest, 'https://b.test/2')
 
     def test_alternative_gets_html(self):
         text = EmailMessage(policy=POLICY)
