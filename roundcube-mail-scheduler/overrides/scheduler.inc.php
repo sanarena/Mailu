@@ -5,7 +5,10 @@
 // /overrides by the scheduler-pkg initContainer; start.py auto-includes
 // /overrides/*.inc.php AFTER the generated config.
 
-if (!in_array('mail_scheduler', (array) $config['plugins'])) {
+// Guarded by directory presence: removing the plugin mount (rollback)
+// leaves this include inert instead of breaking webmail.
+if (is_dir('/var/www/roundcube/plugins/mail_scheduler')
+    && !in_array('mail_scheduler', (array) $config['plugins'])) {
     $config['plugins'][] = 'mail_scheduler';
 }
 
