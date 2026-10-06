@@ -43,6 +43,7 @@ class Config:
         self.session_secret = _get('SESSION_SECRET', required=True)
         self.hmac_secret = _get('HMAC_SECRET', required=True)
         self.dry_run = _get_bool('DRY_RUN', False)
+        self.header_only = _get_bool('HEADER_ONLY', False)
         self.max_mime_bytes = _get_int('MAX_MIME_BYTES', 10 * 1024 * 1024)
         self.max_recipients = _get_int('MAX_RECIPIENTS', 200)
         self.max_links = _get_int('MAX_LINKS', 500)

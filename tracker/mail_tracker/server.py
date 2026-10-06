@@ -3,10 +3,16 @@
 One process, three threads (milter listener, web listener, janitor).
 """
 import logging
+import os
 import secrets
 import signal
 import threading
 import time
+
+
+def _get_bool(name, default=False):
+    return os.environ.get(name, str(default)).strip().lower() in (
+        '1', 'true', 'yes', 'on')
 from email.header import decode_header, make_header
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -35,6 +41,8 @@ class Processor:
     def __init__(self, config, store):
         self.config = config
         self.store = store
+        # Debug escape hatch: add headers but never replace the body.
+        self.header_only = bool(getattr(config, 'header_only', False))
 
     def _sender_domain(self, sender):
         return sender.rsplit('@', 1)[-1].lower() if '@' in sender else ''
@@ -150,7 +158,8 @@ def main():
     app = TrackerApp(config, store, geo)
 
     milter_server = MilterServer(('0.0.0.0', config.milter_port), processor,
-                                 config.max_mime_bytes)
+                                 config.max_mime_bytes,
+                                 debug=_get_bool('MILTER_DEBUG', False))
     web_server = ThreadingHTTPServer(('0.0.0.0', config.web_port), Handler)
     web_server.app = app
     web_server.daemon_threads = True

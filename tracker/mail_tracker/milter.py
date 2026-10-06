@@ -19,9 +19,15 @@ Wire reference (sendmail libmilter):
   A abort, Q quit, U unknown command.
 - macro packet: 1 command byte the macros annotate, then NUL-terminated
   name/value pairs.
-- replies used: c continue, a accept, h addheader (name NUL value),
-  b replbody (full new body).
+- D (macro) and A (abort) are FIRE-AND-FORGET: the MTA reads no
+  reply for them. Answering them injects stale bytes into the MTA's
+  reply stream and shifts every later reply out of phase (live
+  incident: EOM actions silently ignored). Q (quit) closes.
+- replies used: c continue, a accept, h addheader (name NUL value
+  NUL - postfix requires BOTH strings terminated), b replbody (full
+  new body).
 """
+import itertools
 import logging
 import socket
 import socketserver
@@ -76,13 +82,17 @@ class MilterSession:
             data = data.encode('utf-8')
         return struct.pack('>I', 1 + len(data)) + cmd + data
 
-    # -- command handlers (return reply packet or None to close) -------
+    # -- command handlers -------------------------------------------
+    # Returns the reply packet, b'' for fire-and-forget commands (D, A:
+    # the MTA reads no reply - answering desyncs the whole session),
+    # or None to close (Q).
     def handle(self, cmd, data):
         try:
             if cmd == b'O':
                 return self._optneg(data)
             if cmd == b'D':
-                return self._macro(data)
+                self._macro(data)
+                return b''
             if cmd == b'M':
                 return self._mail(data)
             if cmd == b'R':
@@ -98,7 +108,7 @@ class MilterSession:
             if cmd == b'A':
                 self.reset_message()
                 self.aborted = True
-                return self.encode(b'c')
+                return b''
             if cmd == b'Q':
                 return None
             # C, H, T, U and anything unknown: not interested.
@@ -110,24 +120,27 @@ class MilterSession:
 
     def _optneg(self, data):
         if len(data) >= 12:
-            version = struct.unpack('>I', data[0:4])[0]
+            version, offer_actions, offer_proto = struct.unpack(
+                '>III', data[0:12])
         else:
-            version = 2
+            version, offer_actions, offer_proto = 2, 0, 0
+        LOG.info('optneg offer version=%d actions=0x%x protocol=0x%x',
+                 version, offer_actions, offer_proto)
         agreed = min(PROTO_VERSION, version)
         payload = struct.pack('>III', agreed, ACT_ADDHDRS | ACT_CHGBODY,
                               SKIP_CONNECT_HELO)
         return self.encode(b'O', payload)
 
     def _macro(self, data):
+        # fire-and-forget: caller returns b'' and sends nothing
         if not data:
-            return self.encode(b'c')
+            return
         which = bytes(data[0:1])
         parts = _split_cstrings(data[1:])
         pairs = {}
         for i in range(0, len(parts) - 1, 2):
             pairs[parts[i]] = parts[i + 1]
         self.macros[which] = pairs
-        return self.encode(b'c')
 
     def _mail(self, data):
         self.reset_message()
@@ -186,11 +199,22 @@ class MilterSession:
             LOG.info('eom sender=%s rcpt=%d tracked=yes token=%s..',
                      self.sender, len(self.recipients),
                      (token or '')[:8])
-            out = self.encode(b'b', new_body)
+            out = b''
+            packets = []
+            if not getattr(self.processor, 'header_only', False):
+                out += self.encode(b'b', new_body)
+                packets.append('b')
             if token:
+                # Postfix parses TWO NUL-terminated strings and rejects
+                # left-over bytes; the trailing NUL is mandatory, and a
+                # malformed action aborts the whole pending edit set.
                 out += self.encode(
-                    b'h', 'X-Tracker-ID\x00' + token)
+                    b'h', 'X-Tracker-ID\x00' + token + '\x00')
+                packets.append('h')
             out += self.encode(b'a')
+            packets.append('a')
+            LOG.info('eom reply bytes=%d packets=%s', len(out),
+                     '+'.join(packets))
             return out
         except Exception:
             LOG.exception('eom processing failed; accepting unmodified')
@@ -200,10 +224,18 @@ class MilterSession:
 
 
 class MilterHandler(socketserver.BaseRequestHandler):
+    _ids = itertools.count(1)
+
     def handle(self):
         self.request.settimeout(120)
         session = MilterSession(self.server.processor,
                                 self.server.max_body)
+        debug = bool(getattr(self.server, 'debug', False))
+        conn_id = next(MilterHandler._ids) if debug else 0
+        if debug:
+            LOG.info('conn %d open from %s', conn_id,
+                     self.client_address[0]
+                     if self.client_address else '?')
 
         def recv_exact(n):
             buf = bytearray()
@@ -221,11 +253,28 @@ class MilterHandler(socketserver.BaseRequestHandler):
                 if length < 1 or length > MAX_PACKET:
                     return
                 payload = recv_exact(length)
+                if debug:
+                    LOG.info('conn %d C->S %r len=%d', conn_id,
+                             payload[0:1], length)
                 reply = session.handle(payload[0:1], payload[1:])
                 if reply is None:
+                    if debug:
+                        LOG.info('conn %d close (quit)', conn_id)
                     return
+                if reply == b'':
+                    continue  # fire-and-forget command: no reply
+                if debug:
+                    cmds = []
+                    rest = reply
+                    while len(rest) >= 5:
+                        (rlen,) = struct.unpack('>I', rest[:4])
+                        cmds.append('%r:%d' % (rest[4:5], rlen))
+                        rest = rest[4 + rlen:]
+                    LOG.info('conn %d S->C %s', conn_id, ' '.join(cmds))
                 self.request.sendall(reply)
         except (ConnectionError, socket.timeout):
+            if debug:
+                LOG.info('conn %d close (eof/timeout)', conn_id)
             return
         except Exception:
             LOG.exception('milter connection error; closing')
@@ -236,7 +285,8 @@ class MilterServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, processor, max_body):
+    def __init__(self, address, processor, max_body, debug=False):
         self.processor = processor
         self.max_body = max_body
+        self.debug = debug
         super().__init__(address, MilterHandler)

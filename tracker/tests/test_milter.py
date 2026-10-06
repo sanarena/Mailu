@@ -90,7 +90,10 @@ class SessionTest(unittest.TestCase):
         rest = eom[4 + first_len:]
         second_len, = struct.unpack('>I', rest[:4])
         self.assertEqual(rest[4:5], b'h')
-        self.assertEqual(rest[5:5 + second_len - 1], b'X-Tracker-ID\x00TOK')
+        # postfix requires BOTH strings NUL-terminated; a missing
+        # terminator aborts the whole pending edit set (live incident).
+        self.assertEqual(rest[5:5 + second_len - 1],
+                         b'X-Tracker-ID\x00TOK\x00')
         rest = rest[4 + second_len:]
         self.assertEqual(rest, pkt(b'a'))
 
@@ -112,7 +115,9 @@ class SessionTest(unittest.TestCase):
         session = MilterSession(proc, 1000)
         session.handle(b'M', cstr('<a@x.test>'))
         session.handle(b'R', cstr('<b@y.test>'))
-        self.assertEqual(session.handle(b'A', b''), pkt(b'c'))
+        # abort is fire-and-forget: no reply bytes (live incident:
+        # answering A/D desyncs the MTA's reply stream)
+        self.assertEqual(session.handle(b'A', b''), b'')
         self.assertEqual(proc.calls, [])
         # next message on the same connection works
         full_conversation(session)
@@ -135,7 +140,7 @@ class SessionTest(unittest.TestCase):
     def test_malformed_packets_fail_open(self):
         session = MilterSession(FakeProcessor(), 1000)
         self.assertEqual(session.handle(b'O', b'short')[4:5], b'O')
-        self.assertEqual(session.handle(b'D', b''), pkt(b'c'))
+        self.assertEqual(session.handle(b'D', b''), b'')
         self.assertEqual(session.handle(b'M', b''), pkt(b'c'))
         self.assertEqual(session.handle(b'E', b'')[4:5], b'a')
 
@@ -171,6 +176,54 @@ class SessionTest(unittest.TestCase):
         full_conversation(session, rcpts=('<two@y.test>',))
         self.assertEqual([c[1] for c in proc.calls],
                          [['one@y.test'], ['two@y.test']])
+
+
+class PostfixPhaseTest(unittest.TestCase):
+    """Emulate postfix's reply discipline: it reads a reply after every
+    command EXCEPT D (macro) and A (abort), which are fire-and-forget.
+    If we answer D/A, every later reply shifts out of phase and the EOM
+    action set is silently lost (live incident)."""
+
+    def test_eom_actions_stay_in_phase(self):
+        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok'))
+        session = MilterSession(proc, 100000)
+        script = [
+            (b'O', struct.pack('>III', 6, 0xFFFF, 0)),
+            (b'D', b'C' + cstr('j', 'mx', '_', 'peer')),
+            (b'D', b'M' + cstr('{auth_authen}', 'a@x.test')),
+            (b'M', cstr('<a@x.test>')),
+            (b'R', cstr('<b@y.test>')),
+            (b'A', b''),  # aborted attempt, then a real one
+            (b'D', b'M' + cstr('{auth_authen}', 'a@x.test')),
+            (b'M', cstr('<a@x.test>')),
+            (b'R', cstr('<b@y.test>')),
+            (b'L', cstr('Subject', 'Hi')),
+            (b'N', b''),
+            (b'B', b'hello\r\n'),
+            (b'E', b''),
+        ]
+        eom = None
+        for cmd, data in script:
+            reply = session.handle(cmd, data)
+            if cmd in (b'D', b'A'):
+                self.assertEqual(reply, b'', f'{cmd} must send no reply')
+            else:
+                self.assertTrue(reply, f'{cmd} must get a reply')
+                if cmd == b'E':
+                    eom = reply
+        # EOM reply lands exactly in phase: a chain of length-prefixed
+        # packets: replbody + addheader + accept
+        pkts = []
+        buf = eom
+        while buf:
+            (length,) = struct.unpack('>I', buf[:4])
+            pkts.append(buf[4:4 + length])
+            buf = buf[4 + length:]
+        self.assertEqual(pkts[0], b'bnew\r\n')
+        self.assertEqual(pkts[1], b'hX-Tracker-ID\x00TOK\x00')
+        self.assertEqual(pkts[2], b'a')
+        self.assertEqual(len(proc.calls), 1)
+        self.assertEqual(proc.calls[0][4], {'{auth_authen}': 'a@x.test'})
 
 
 class LiveSocketTest(unittest.TestCase):
