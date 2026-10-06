@@ -57,7 +57,7 @@ class SessionTest(unittest.TestCase):
         length, = struct.unpack('>I', reply[:4])
         self.assertEqual(reply[4:5], b'O')
         version, actions, proto = struct.unpack('>III', reply[5:17])
-        self.assertEqual((version, actions, proto), (6, 0x03, 0x03))
+        self.assertEqual((version, actions, proto), (6, 0x13, 0x03))
         self.assertEqual(length, 1 + 12)
 
     def test_optneg_old_version(self):
@@ -67,7 +67,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(version, 2)
 
     def test_accept_unmodified(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         replies = full_conversation(MilterSession(proc, 1000))
         # replies[0] is the OPTNEG answer; the rest pre-EOM must continue
         self.assertEqual(replies[0][4:5], b'O')
@@ -80,7 +80,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(body, b'hello\r\n')
 
     def test_modify_replbody_and_header(self):
-        proc = FakeProcessor(result=(b'new-body\r\n', 'TOK', 'ok'))
+        proc = FakeProcessor(result=(b'new-body\r\n', 'TOK', 'ok', None))
         replies = full_conversation(MilterSession(proc, 1000))
         eom = replies[-1]
         # reply = replbody packet + addheader packet + accept packet
@@ -98,20 +98,20 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(rest, pkt(b'a'))
 
     def test_macros_reach_processor(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         macros = cstr('{auth_authen}', 'a@x.test', 'i', 'queue1')
         full_conversation(MilterSession(proc, 1000), macros=macros)
         self.assertEqual(proc.calls[0][4],
                          {'{auth_authen}': 'a@x.test', 'i': 'queue1'})
 
     def test_oversize_accepts_without_processing(self):
-        proc = FakeProcessor(result=(b'x', 'T', 'ok'))
+        proc = FakeProcessor(result=(b'x', 'T', 'ok', None))
         session = MilterSession(proc, 10)
         full_conversation(session, body=b'z' * 100)
         self.assertEqual(proc.calls, [])
 
     def test_abort_resets(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         session = MilterSession(proc, 1000)
         session.handle(b'M', cstr('<a@x.test>'))
         session.handle(b'R', cstr('<b@y.test>'))
@@ -145,7 +145,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(session.handle(b'E', b'')[4:5], b'a')
 
     def test_macros_do_not_leak_across_messages(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         session = MilterSession(proc, 1000)
         full_conversation(session, macros=cstr('{auth_authen}', 'a@x.test'))
         full_conversation(session)
@@ -153,7 +153,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(proc.calls[1][4], {})
 
     def test_header_and_rcpt_caps(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         session = MilterSession(proc, 10 ** 9)
         session.handle(b'O', struct.pack('>III', 6, 0, 0))
         session.handle(b'M', cstr('<a@x.test>'))
@@ -170,7 +170,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(len(rcpts), 5000)
 
     def test_two_messages_one_connection(self):
-        proc = FakeProcessor(result=(None, None, 'skip'))
+        proc = FakeProcessor(result=(None, None, 'skip', None))
         session = MilterSession(proc, 1000)
         full_conversation(session, rcpts=('<one@y.test>',))
         full_conversation(session, rcpts=('<two@y.test>',))
@@ -185,7 +185,7 @@ class PostfixPhaseTest(unittest.TestCase):
     action set is silently lost (live incident)."""
 
     def test_eom_actions_stay_in_phase(self):
-        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok'))
+        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok', None))
         session = MilterSession(proc, 100000)
         script = [
             (b'O', struct.pack('>III', 6, 0xFFFF, 0)),
@@ -226,9 +226,33 @@ class PostfixPhaseTest(unittest.TestCase):
         self.assertEqual(proc.calls[0][4], {'{auth_authen}': 'a@x.test'})
 
 
+    def test_eom_emits_chgheader_ops(self):
+        ops = {'content-type': 'multipart/alternative; boundary="B"',
+               'content-transfer-encoding': None}
+        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok', ops))
+        replies = full_conversation(MilterSession(proc, 100000))
+        pkts = []
+        buf = replies[-1]
+        while buf:
+            (length,) = struct.unpack('>I', buf[:4])
+            pkts.append(buf[4:4 + length])
+            buf = buf[4 + length:]
+        # order: replbody, chgheaders, addheader, accept
+        self.assertEqual(pkts[0], b'bnew\r\n')
+        self.assertEqual(
+            pkts[1],
+            b'm\x00\x00\x00\x01content-type\x00'
+            b'multipart/alternative; boundary="B"\x00')
+        self.assertEqual(
+            pkts[2],
+            b'm\x00\x00\x00\x01content-transfer-encoding\x00\x00')
+        self.assertEqual(pkts[3], b'hX-Tracker-ID\x00TOK\x00')
+        self.assertEqual(pkts[4], b'a')
+
+
 class LiveSocketTest(unittest.TestCase):
     def test_round_trip(self):
-        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok'))
+        proc = FakeProcessor(result=(b'new\r\n', 'TOK', 'ok', None))
         server = MilterServer(('127.0.0.1', 0), proc, 100000)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()

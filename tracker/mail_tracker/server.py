@@ -50,30 +50,30 @@ class Processor:
     def process(self, sender, recipients, headers, body, macros):
         sender = (sender or '').strip().lower()
         if not sender:
-            return None, None, 'bounce'
+            return None, None, 'bounce', None
         forced = top_header(headers, 'x-tracker-track').strip().lower()
         if forced == 'no':
-            return None, None, 'header-opt-out'
+            return None, None, 'header-opt-out', None
         force_track = forced == 'yes'
         auto = top_header(headers, 'auto-submitted').strip().lower()
         if auto and auto != 'no':
-            return None, None, 'auto-submitted'
+            return None, None, 'auto-submitted', None
         if self._sender_domain(sender) not in self.config.local_domains:
-            return None, None, 'not-local-sender'
+            return None, None, 'not-local-sender', None
         if not force_track and self.store.sender_opted_out(sender):
-            return None, None, 'sender-opt-out'
+            return None, None, 'sender-opt-out', None
         clean_rcpts = []
         for rcpt in recipients or []:
             rcpt = (rcpt or '').strip().lower()
             if rcpt and '@' in rcpt:
                 clean_rcpts.append(rcpt)
         if not clean_rcpts:
-            return None, None, 'no-recipients'
+            return None, None, 'no-recipients', None
         if len(clean_rcpts) > self.config.max_recipients:
-            return None, None, 'too-many-recipients'
+            return None, None, 'too-many-recipients', None
         if (not force_track and len(clean_rcpts) == 1
                 and self.store.recipient_opted_out(sender, clean_rcpts[0])):
-            return None, None, 'recipient-opt-out'
+            return None, None, 'recipient-opt-out', None
 
         token = secrets.token_urlsafe(18)
         base = self.config.base_url
@@ -84,16 +84,16 @@ class Processor:
             return f'{base}/c/{token}/{idx}?s={sig}'
 
         try:
-            new_body, links, reason = process_body(
+            new_body, links, reason, top_headers = process_body(
                 body or b'', headers, pixel_url, rewrite,
                 self.config.track_host, self.config.max_links)
         except Exception:
             LOG.exception('mime processing failed for %s', sender)
-            return None, None, 'processing-error'
+            return None, None, 'processing-error', None
         if new_body is None:
-            return None, None, reason
+            return None, None, reason, None
         if self.config.dry_run:
-            return body, None, f'dry-run:{reason}'
+            return body, None, f'dry-run:{reason}', None
         message_id = top_header(headers, 'message-id')[:500]
         try:
             self.store.add_message(
@@ -102,8 +102,8 @@ class Processor:
                 clean_rcpts, links, len(body or b''))
         except Exception:
             LOG.exception('registering tracked mail failed')
-            return None, None, 'db-error'
-        return new_body, token, 'ok'
+            return None, None, 'db-error', None
+        return new_body, token, 'ok', top_headers
 
 
 class Handler(BaseHTTPRequestHandler):

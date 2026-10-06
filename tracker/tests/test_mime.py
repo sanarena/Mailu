@@ -54,7 +54,7 @@ class MimeTest(unittest.TestCase):
                         '<a href="/relative">r</a></body></html>',
                         subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, links, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, links, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         self.assertEqual(links, ['http://e.test/a', 'https://e.test/b'])
         # decode before asserting: quoted-printable soft-breaks split literals
@@ -70,7 +70,7 @@ class MimeTest(unittest.TestCase):
         msg = EmailMessage(policy=POLICY)
         msg.set_content('<p>no body tag</p>', subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         self.assertTrue(new.rstrip().endswith(b'/>') or b'/o/TOKEN.gif' in new)
 
@@ -79,7 +79,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content('<html><body><p>' + 'x' * 500 + '</p></body></html>',
                         subtype='html', cte='base64')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         parsed = parse_body(new, headers)
         self.assertIn('/o/TOKEN.gif', parsed.get_content())
@@ -89,7 +89,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content('<html><body><p>Grüße</p></body></html>',
                         subtype='html', cte='quoted-printable')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         parsed = parse_body(new, headers)
         self.assertIn('/o/TOKEN.gif', parsed.get_content())
@@ -99,7 +99,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content('<html><body><a href="https://track.x.test/c/z/0?s=q">'
                         'p</a></body></html>', subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, links, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, links, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         self.assertEqual(links, [])
 
@@ -110,7 +110,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content(f'<html><body>{links_html}</body></html>',
                         subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, links, _ = process_body(body, headers, PIXEL, rewrite, HOST,
+        new, links, _, hdrs = process_body(body, headers, PIXEL, rewrite, HOST,
                                      max_links=3)
         self.assertEqual(len(links), 3)
         self.assertIn(b'http://e.test/9', new)  # beyond cap: untouched
@@ -119,7 +119,7 @@ class MimeTest(unittest.TestCase):
         msg = EmailMessage(policy=POLICY)
         msg.set_content('Hello <world>\nSecond line')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         # body bytes of the new multipart/alternative (headers travel
         # separately through the milter, so no multipart line is present)
@@ -132,7 +132,7 @@ class MimeTest(unittest.TestCase):
         msg = EmailMessage(policy=POLICY)
         msg.set_content('see https://e.test/landing for details')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, links, reason = process_body(body, headers, PIXEL, rewrite,
+        new, links, reason, hdrs = process_body(body, headers, PIXEL, rewrite,
                                           HOST)
         self.assertEqual(reason, 'ok')
         self.assertEqual(links, ['https://e.test/landing'])
@@ -166,6 +166,36 @@ class MimeTest(unittest.TestCase):
         rest = html.split('</a> ', 1)[1]
         self.assertEqual(rest, 'https://b.test/2')
 
+    def test_plain_conversion_returns_header_ops(self):
+        msg = EmailMessage(policy=POLICY)
+        msg.set_content('hello')
+        headers, body = split(msg.as_bytes(policy=POLICY))
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite,
+                                            HOST)
+        self.assertEqual(reason, 'ok')
+        self.assertTrue(hdrs['content-type'].startswith(
+            'multipart/alternative; boundary='))
+        self.assertIsNone(hdrs['content-transfer-encoding'])
+        boundary = hdrs['content-type'].split('boundary=')[1].strip('"')
+        self.assertIn(('--' + boundary).encode(), new)
+
+    def test_plain_conversion_no_cte_no_delete(self):
+        headers = [('Content-Type', 'text/plain; charset="utf-8"'),
+                   ('Subject', 'x')]
+        _, _, reason, hdrs = process_body(b'hello\r\n', headers, PIXEL,
+                                          rewrite, HOST)
+        self.assertEqual(reason, 'ok')
+        self.assertNotIn('content-transfer-encoding', hdrs)
+
+    def test_html_rewrite_needs_no_header_ops(self):
+        msg = EmailMessage(policy=POLICY)
+        msg.set_content('<html><body>hi</body></html>', subtype='html')
+        headers, body = split(msg.as_bytes(policy=POLICY))
+        _, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite,
+                                          HOST)
+        self.assertEqual(reason, 'ok')
+        self.assertIsNone(hdrs)
+
     def test_alternative_gets_html(self):
         text = EmailMessage(policy=POLICY)
         text.set_content('plain only')
@@ -173,7 +203,7 @@ class MimeTest(unittest.TestCase):
         msg.set_type('multipart/alternative')
         msg.attach(text)
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         self.assertIn(b'/o/TOKEN.gif', new)
 
@@ -183,7 +213,7 @@ class MimeTest(unittest.TestCase):
         msg.add_attachment(b'%PDF-fake', maintype='application',
                            subtype='pdf', filename='f.pdf')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         self.assertIn(b'see attached', new)
         decoded = quopri.decodestring(new).decode('utf-8', 'replace')
@@ -197,7 +227,7 @@ class MimeTest(unittest.TestCase):
         msg.add_attachment(b'data', maintype='application',
                            subtype='octet-stream', filename='f.bin')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertIsNone(new)
         self.assertEqual(reason, 'no-text-part')
 
@@ -205,13 +235,13 @@ class MimeTest(unittest.TestCase):
         headers = [('Content-Type',
                     'multipart/signed; boundary="b"; protocol="x"')]
         body = b'--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b--\r\n'
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertIsNone(new)
         self.assertEqual(reason, 'signed-or-encrypted')
 
     def test_encrypted_skipped(self):
         headers = [('Content-Type', 'multipart/encrypted; boundary="b"')]
-        new, _, reason = process_body(b'--b\r\n--b--\r\n', headers, PIXEL,
+        new, _, reason, hdrs = process_body(b'--b\r\n--b--\r\n', headers, PIXEL,
                                       rewrite, HOST)
         self.assertIsNone(new)
         self.assertEqual(reason, 'signed-or-encrypted')
@@ -221,7 +251,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content('<html><body>x</body></html>', subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
         headers.append(('X-Tracker-ID', 'old'))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertIsNone(new)
         self.assertEqual(reason, 'already-tracked')
 
@@ -230,7 +260,7 @@ class MimeTest(unittest.TestCase):
         msg.set_content('<html><body><img src="https://track.x.test/o/z.gif">'
                         '</body></html>', subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertIsNone(new)
         self.assertEqual(reason, 'already-tracked')
 
@@ -243,7 +273,7 @@ class MimeTest(unittest.TestCase):
         msg.add_attachment(inner.as_bytes(policy=POLICY),
                            maintype='message', subtype='rfc822')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
         # pixel appears exactly once (outer html), inner untouched
         self.assertEqual(new.count(b'/o/TOKEN.gif'), 1)
@@ -252,9 +282,9 @@ class MimeTest(unittest.TestCase):
         msg = EmailMessage(policy=POLICY)
         msg.set_content('<html><body>hi</body></html>', subtype='html')
         headers, body = split(msg.as_bytes(policy=POLICY))
-        new, _, reason = process_body(body, headers, PIXEL, rewrite, HOST)
+        new, _, reason, hdrs = process_body(body, headers, PIXEL, rewrite, HOST)
         self.assertEqual(reason, 'ok')
-        again, _, reason2 = process_body(new, headers, PIXEL, rewrite, HOST)
+        again, _, reason2, hdrs = process_body(new, headers, PIXEL, rewrite, HOST)
         self.assertIsNone(again)
         self.assertEqual(reason2, 'already-tracked')
 

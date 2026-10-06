@@ -25,7 +25,10 @@ Wire reference (sendmail libmilter):
   incident: EOM actions silently ignored). Q (quit) closes.
 - replies used: c continue, a accept, h addheader (name NUL value
   NUL - postfix requires BOTH strings terminated), b replbody (full
-  new body).
+  new body), m chgheader (index u32be, name NUL, value NUL; empty
+  value deletes the header - per postfix milter8.c).
+- EOM action order: all b chunks contiguous first (postfix finalizes
+  body replacement at the first non-b request), then m, h, a.
 """
 import itertools
 import logging
@@ -38,6 +41,7 @@ LOG = logging.getLogger('tracker.milter')
 PROTO_VERSION = 6
 ACT_ADDHDRS = 0x01
 ACT_CHGBODY = 0x02
+ACT_CHGHDRS = 0x10  # SMFIF_CHGHDRS: change/delete headers at EOM
 SKIP_CONNECT_HELO = 0x01 | 0x02  # SMFIP_NOCONNECT | SMFIP_NOHELO
 
 MAX_PACKET = 64 * 1024 * 1024
@@ -127,8 +131,9 @@ class MilterSession:
         LOG.info('optneg offer version=%d actions=0x%x protocol=0x%x',
                  version, offer_actions, offer_proto)
         agreed = min(PROTO_VERSION, version)
-        payload = struct.pack('>III', agreed, ACT_ADDHDRS | ACT_CHGBODY,
-                              SKIP_CONNECT_HELO)
+        payload = struct.pack(
+            '>III', agreed,
+            ACT_ADDHDRS | ACT_CHGBODY | ACT_CHGHDRS, SKIP_CONNECT_HELO)
         return self.encode(b'O', payload)
 
     def _macro(self, data):
@@ -189,7 +194,7 @@ class MilterSession:
             if self.oversize or self.sender is None:
                 return self.encode(b'a')
             body = b''.join(self.body_chunks)
-            new_body, token, reason = self.processor.process(
+            new_body, token, reason, top_headers = self.processor.process(
                 self.sender, self.recipients, self.headers, body,
                 self.mail_macros)
             if new_body is None or new_body == body:
@@ -204,6 +209,15 @@ class MilterSession:
             if not getattr(self.processor, 'header_only', False):
                 out += self.encode(b'b', new_body)
                 packets.append('b')
+            for name, value in (top_headers or {}).items():
+                # chgheader: index u32be + name NUL + value NUL. Empty
+                # value deletes (postfix del_header); index 1 = first
+                # instance. Header match is case-insensitive.
+                payload = (struct.pack('>I', 1) + name.encode('utf-8') +
+                           b'\x00' + (value or '').encode('utf-8') +
+                           b'\x00')
+                out += self.encode(b'm', payload)
+                packets.append('m')
             if token:
                 # Postfix parses TWO NUL-terminated strings and rejects
                 # left-over bytes; the trailing NUL is mandatory, and a

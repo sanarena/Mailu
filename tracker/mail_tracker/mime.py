@@ -4,10 +4,15 @@ Operates on the message BODY only (headers arrive separately via the
 milter HEADER events and are passed in for content-type discovery).
 Never touches signed/encrypted content or attached sub-messages.
 
-Public entry point: process_body() -> (new_body|None, link_urls, reason)
+Public entry point: process_body()
+  -> (new_body|None, link_urls, reason, top_headers|None)
+top_headers maps lower-cased header names to new values (None value
+means delete) when the body conversion changes the top-level MIME
+structure and the milter must fix headers via chgheader.
 """
 import html as _html
 import re
+import secrets
 from email import message_from_bytes
 from email.message import EmailMessage
 from email import policy as _policy
@@ -208,14 +213,15 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
 
     headers: list of (name, value) from milter HEADER events.
     rewrite_link(url, idx) -> replacement url for tracked links.
-    Returns (new_body_bytes|None, [original link urls], reason).
-    None body means "send unmodified" (reason explains why).
+    Returns (new_body_bytes|None, [original link urls], reason,
+    top_headers|None). None body means "send unmodified" (reason
+    explains why).
     """
     top_ctype = top_content_type(headers)
     if top_ctype in _SKIP_TOP_TYPES:
-        return None, [], 'signed-or-encrypted'
+        return None, [], 'signed-or-encrypted', None
     if top_header(headers, 'x-tracker-id'):
-        return None, [], 'already-tracked'
+        return None, [], 'already-tracked', None
 
     pseudo = b'MIME-Version: 1.0\r\n'
     for name in ('content-type', 'content-transfer-encoding',
@@ -227,7 +233,7 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
     try:
         msg = message_from_bytes(pseudo, policy=POLICY)
     except Exception:
-        return None, [], 'unparseable'
+        return None, [], 'unparseable', None
 
     marker = f'{self_host}/o/' if self_host else '/o/'
     pixel_html = PIXEL_TEMPLATE.format(url=pixel_url)
@@ -237,11 +243,11 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
                                        self_host, max_links, collected,
                                        marker)
     except Exception:
-        return None, [], 'processing-error'
+        return None, [], 'processing-error', None
     if modified == -1:
-        return None, [], 'already-tracked'
+        return None, [], 'already-tracked', None
     if modified > 0:
-        return _split_body(msg), collected, 'ok'
+        return _split_body(msg), collected, 'ok', None
 
     # No html part: try to add one safely.
     if top_ctype == 'multipart/alternative':
@@ -256,12 +262,12 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
                                  self_host, max_links, collected),
                     subtype='html', charset='utf-8')
                 msg.attach(html_part)
-                return _split_body(msg), collected, 'ok'
-        return None, [], 'no-text-part'
+                return _split_body(msg), collected, 'ok', None
+        return None, [], 'no-text-part', None
     if top_ctype == 'text/plain':
         text = _part_text(msg)
         if text is None:
-            return None, [], 'unparseable'
+            return None, [], 'unparseable', None
         new_msg = EmailMessage(policy=POLICY)
         charset = msg.get_content_charset() or 'utf-8'
         new_msg.set_content(text, subtype='plain', charset=charset)
@@ -269,7 +275,17 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
             text_to_html(text, pixel_html, rewrite_link, self_host,
                          max_links, collected),
             subtype='html', charset='utf-8')
-        return _split_body(new_msg), collected, 'ok'
+        # replbody swaps the body but headers travel separately: the
+        # milter must flip Content-Type to the new multipart value or
+        # the message parses as text/plain with MIME soup inside. The
+        # boundary is normally minted at flatten time, so mint it now
+        # to capture the exact header value the body will use.
+        new_msg.set_boundary('===============' + secrets.token_hex(9) +
+                             '==')
+        ops = {'content-type': str(new_msg['Content-Type'])}
+        if top_header(headers, 'content-transfer-encoding'):
+            ops['content-transfer-encoding'] = None  # illegal on multipart
+        return _split_body(new_msg), collected, 'ok', ops
     if top_ctype in ('multipart/mixed', 'multipart/related',
                      'multipart/digest', 'multipart/report'):
         found = _find_direct_text_plain(msg)
@@ -287,9 +303,9 @@ def process_body(body, headers, pixel_url, rewrite_link, self_host,
                 payload = msg.get_payload()
                 payload[i] = alt
                 msg.set_payload(payload)
-                return _split_body(msg), collected, 'ok'
-        return None, [], 'no-text-part'
-    return None, [], 'unsupported-type'
+                return _split_body(msg), collected, 'ok', None
+        return None, [], 'no-text-part', None
+    return None, [], 'unsupported-type', None
 
 
 def _split_body(msg):
