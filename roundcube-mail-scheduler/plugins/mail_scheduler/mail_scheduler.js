@@ -138,6 +138,8 @@
       rcmail.message_list.addEventListener('select', toggleButtons);
     }
     toggleButtons();
+    // custom commands start disabled: the compose button is always on
+    rcmail.enable_command('plugin.scheduler.sendlater', true);
   });
   rcmail.addEventListener('listupdate', toggleButtons);
 
