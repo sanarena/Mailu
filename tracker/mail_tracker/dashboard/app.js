@@ -142,10 +142,17 @@
           return '<li><span style="flex:1">' + esc(r) + '</span>' +
             '<button class="btn ghost small" data-optout="' + esc(r) + '">Don\'t track</button></li>';
         }).join('') + '</ul>';
+      var linkByIdx = {};
+      (m.links || []).forEach(function (l) { linkByIdx[l.idx] = l.url; });
       $('detail-events').innerHTML = m.events.map(function (ev) {
+        var extra = '';
+        if (ev.kind === 'click' && linkByIdx[ev.link_idx]) {
+          extra = '<span class="url">' + esc(linkByIdx[ev.link_idx]) + '</span>';
+        }
         return '<li><span class="kind ' + esc(ev.kind) + '">' + esc(ev.kind) +
           '</span><time title="' + esc(absTime(ev.at)) + '">' +
-          esc(absTime(ev.at)) + '</time><span>' + esc(where(ev)) + '</span></li>';
+          esc(absTime(ev.at)) + '</time><span>' + esc(where(ev)) + '</span>' +
+          extra + '</li>';
       }).join('');
       $('detail-empty').classList.toggle('hidden', m.events.length > 0);
       switchView('detail');

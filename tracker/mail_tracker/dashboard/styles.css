@@ -128,6 +128,11 @@ table.mail tbody tr:last-child td { border-bottom: 0; }
 .timeline .kind.open { color: var(--accent); }
 .timeline .kind.click { color: var(--warn); }
 .timeline time { flex: none; width: 150px; color: var(--muted); font-size: 12.5px; }
+.timeline .url {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12.5px;
+}
 
 /* forms */
 label.f { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 13px; }

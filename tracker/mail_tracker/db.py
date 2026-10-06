@@ -174,6 +174,12 @@ class Store:
                 (mid, idx)).fetchone()
             return row['url'] if row else None
 
+    def links_of(self, mid):
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                'SELECT idx, url FROM links WHERE message_id=? ORDER BY idx',
+                (mid,)).fetchall()]
+
     # -- events --------------------------------------------------------
     def add_event(self, mid, kind, ip='', country='', city='', client='',
                   device='', user_agent='', link_idx=None):

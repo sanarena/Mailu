@@ -320,6 +320,7 @@ class TrackerApp:
                 'subject': msg['subject'], 'sent_at': msg['sent_at'],
                 'tracking': bool(msg['tracking']),
                 'recipients': self.store.recipients_of(mid),
+                'links': self.store.links_of(mid),
                 'events': events})
         if method == 'POST' and action == 'tracking':
             try:

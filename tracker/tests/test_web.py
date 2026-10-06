@@ -136,6 +136,16 @@ class WebTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)['recipients'], ['c@y.test'])
 
+    def test_detail_includes_links(self):
+        status, _, body = self.call('GET', f'/api/messages/{self.mid_a}',
+                                    user='a@x.test')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['links'],
+                         [{'idx': 0, 'url': 'http://e.test/'}])
+        status, _, body = self.call('GET', f'/api/messages/{self.mid_b}',
+                                    user='b@x.test')
+        self.assertEqual(json.loads(body)['links'], [])
+
     def test_admin_sees_all(self):
         _, _, body = self.call('GET', '/api/messages?all=1',
                                user='admin@x.test')
