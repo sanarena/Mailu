@@ -61,7 +61,7 @@ class FakeSMTP:
 
 
 class FakeIMAP:
-    """Folder -> {message-id: count}; records moves."""
+    """Folder -> {uid: message-id}; records moves."""
     folders = {}
     moves = []
     fail_move = False
@@ -86,10 +86,20 @@ class FakeIMAP:
     def uid(self, cmd, *args):
         assert None not in args, 'uid() takes no charset slot'
         if cmd == 'search':
+            assert args == ('ALL',), args
             box = FakeIMAP.folders.get(self.selected, {})
-            msgid = args[-1].strip('"')
-            n = box.get(msgid, 0)
-            return 'OK', [' '.join(str(i + 1) for i in range(n)).encode()]
+            return 'OK', [' '.join(str(u) for u in sorted(box)).encode()]
+        if cmd == 'fetch':
+            box = FakeIMAP.folders.get(self.selected, {})
+            out = []
+            for raw in args[0].split(b','):
+                uid = int(raw)
+                if uid in box:
+                    out.append((
+                        f'{uid} (UID {uid} BODY[HEADER.FIELDS'
+                        ' (MESSAGE-ID)] {10 + len(box[uid])})'.encode(),
+                        f'Message-ID: {box[uid]}\r\n\r\n'.encode()))
+            return 'OK', out
         if cmd == 'move':
             if FakeIMAP.fail_move:
                 return 'NO', []
@@ -221,7 +231,7 @@ class PollerTest(unittest.TestCase):
 
     def test_due_send_submits_and_files(self):
         now = int(time.time())
-        FakeIMAP.folders = {'Scheduled': {'<m1@x>': 1}}
+        FakeIMAP.folders = {'Scheduled': {1: '<m1@x>'}}
         self.store.add_scheduled('a@x.test', 'a@x.test', ['b@y.test'],
                                  'Hi', MIME, now - 5)
         sent, woken = self.poller.poll_once(now)
@@ -257,13 +267,22 @@ class PollerTest(unittest.TestCase):
 
     def test_wake_moves_message_back(self):
         now = int(time.time())
-        FakeIMAP.folders = {'Snoozed': {'<m9>': 2}}
+        FakeIMAP.folders = {'Snoozed': {1: '<m9>', 2: '<m9>'}}
         self.store.add_snooze('a@x.test', '<m9>', 'INBOX', now - 5)
         sent, woken = self.poller.poll_once(now)
         self.assertEqual((sent, woken), (0, 1))
         self.assertEqual(FakeIMAP.moves, [('a@x.test', 'Snoozed', 'INBOX', 2)])
         row = self.store.list_snoozes('a@x.test')[0]
         self.assertEqual(row['status'], 'done')
+
+    def test_wake_matches_exact_mid_only(self):
+        now = int(time.time())
+        FakeIMAP.folders = {'Snoozed': {1: '<other>', 2: '  <M9>  ',
+                                        3: '<m9x>'}}
+        self.store.add_snooze('a@x.test', '<m9>', 'INBOX', now - 5)
+        self.assertEqual(self.poller.poll_once(now), (0, 1))
+        # uid 2 matches case-insensitively; decoys untouched
+        self.assertEqual(FakeIMAP.moves, [('a@x.test', 'Snoozed', 'INBOX', 1)])
 
     def test_wake_missing_retries_then_done(self):
         now = int(time.time())
@@ -293,7 +312,7 @@ class PollerTest(unittest.TestCase):
             (sid,)).fetchone()
         self.assertEqual((row[0], row[1]), ('sent', None))
         # copy appears later -> filed on a later poll
-        FakeIMAP.folders['Scheduled'] = {'<m1@x>': 1}
+        FakeIMAP.folders['Scheduled'] = {1: '<m1@x>'}
         self.poller.poll_once(now + 60)
         row = self.store._db.execute(
             'SELECT filed_at FROM scheduled WHERE id=?', (sid,)).fetchone()
@@ -326,7 +345,7 @@ class PollerTest(unittest.TestCase):
     def test_move_fallback_copy_delete(self):
         FakeIMAP.fail_move = True
         now = int(time.time())
-        FakeIMAP.folders = {'Snoozed': {'<m9>': 1}}
+        FakeIMAP.folders = {'Snoozed': {1: '<m9>'}}
         self.store.add_snooze('a@x.test', '<m9>', 'INBOX', now - 5)
         self.assertEqual(self.poller.poll_once(now), (0, 1))
         self.assertEqual(FakeIMAP.moves, [('a@x.test', 'Snoozed', 'INBOX', 1)])

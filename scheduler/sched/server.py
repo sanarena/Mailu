@@ -13,6 +13,7 @@ import hmac
 import imaplib
 import json
 import logging
+import re
 import smtplib
 import threading
 import time
@@ -90,13 +91,32 @@ class ImapWorker:
         typ, _ = conn.select(folder, readonly=True)
         if typ != 'OK':
             return None
-        safe = message_id.replace('\\', '\\\\').replace('"', '\\"')
-        # NB: uid() passes args verbatim (no charset slot unlike
-        # search()); a stray None breaks the command (live incident).
-        typ, data = conn.uid('search', 'HEADER', 'Message-ID', f'"{safe}"')
+        # Match client-side: server HEADER Message-ID search misses
+        # exact mids here (FTS index quirk, live incident), while ALL
+        # + FETCH reads true headers. Snoozed/Scheduled folders stay
+        # small, so a full header sweep per due row is cheap.
+        typ, data = conn.uid('search', 'ALL')
         if typ != 'OK' or not data or not data[0]:
             return []
-        return data[0].split()
+        uids = data[0].split()
+        want = message_id.strip().lower()
+        found = []
+        for i in range(0, len(uids), 100):
+            chunk = b','.join(uids[i:i + 100])
+            typ, fetched = conn.uid(
+                'fetch', chunk, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            if typ != 'OK':
+                continue
+            for item in fetched or []:
+                if not isinstance(item, tuple) or len(item) < 2:
+                    continue
+                match = re.search(rb'UID (\d+)', item[0])
+                header = item[1].decode('utf-8', 'replace')
+                value = header.split(':', 1)[-1].strip().lower() \
+                    if ':' in header else ''
+                if match and value == want:
+                    found.append(match.group(1))
+        return found
 
     def move_matches(self, user, message_id, from_folder, to_folder):
         """Move every message with message_id from from_folder to
