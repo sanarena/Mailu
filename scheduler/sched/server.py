@@ -54,6 +54,19 @@ def parse_recipients(raw_list, max_recipients):
     return addrs
 
 
+def _list_name(line):
+    """Mailbox name from a LIST response line. Handles both quoted
+    ('. "/" "Sent Box"') and unquoted ('." "." Sent', dovecot's
+    Maildir++ '.' delimiter) trailing names."""
+    parts = line.split(b'"')
+    if len(parts) >= 3:
+        tail = parts[-1].strip()
+        if tail:
+            return tail.decode('utf-7', 'replace')
+        return parts[-2].decode('utf-7', 'replace')
+    return line.rsplit(b' ', 1)[-1].decode('utf-7', 'replace')
+
+
 class ImapWorker:
     """Trusted-net IMAP helper. One connection per call (poller volume
     is tiny); login password is ignored by the backend on trusted nets.
@@ -74,8 +87,9 @@ class ImapWorker:
         if typ != 'OK':
             return None
         safe = message_id.replace('\\', '\\\\').replace('"', '\\"')
-        typ, data = conn.uid('search', None, 'HEADER', 'Message-ID',
-                             f'"{safe}"')
+        # NB: uid() passes args verbatim (no charset slot unlike
+        # search()); a stray None breaks the command (live incident).
+        typ, data = conn.uid('search', 'HEADER', 'Message-ID', f'"{safe}"')
         if typ != 'OK' or not data or not data[0]:
             return []
         return data[0].split()
@@ -121,10 +135,7 @@ class ImapWorker:
                 return 'Sent'
             for line in data or []:
                 if isinstance(line, bytes) and b'\\Sent' in line:
-                    parts = line.split(b'"')
-                    name = (parts[-2] if len(parts) >= 3
-                            else line.rsplit(b' ', 1)[-1])
-                    return name.decode('utf-7', 'replace')
+                    return _list_name(line)
             return 'Sent'
         finally:
             try:

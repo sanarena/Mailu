@@ -84,6 +84,7 @@ class FakeIMAP:
                       b'(\\HasNoChildren \\Sent) "/" "Sent"']
 
     def uid(self, cmd, *args):
+        assert None not in args, 'uid() takes no charset slot'
         if cmd == 'search':
             box = FakeIMAP.folders.get(self.selected, {})
             msgid = args[-1].strip('"')
@@ -271,6 +272,16 @@ class PollerTest(unittest.TestCase):
         self.assertEqual(self.poller.poll_once(now), (0, 1))
         row = self.store.list_snoozes('a@x.test')[0]
         self.assertEqual(row['status'], 'done')
+
+    def test_sent_folder_list_forms(self):
+        from scheduler.sched.server import _list_name
+        # dovecot Maildir++: trailing name unquoted, '.' delimiter
+        self.assertEqual(
+            _list_name(b'* LIST (\\HasNoChildren \\Sent) "." Sent'), 'Sent')
+        # quoted name with a space
+        self.assertEqual(
+            _list_name(b'* LIST (\\HasNoChildren \\Sent) "/" "Sent Mail"'),
+            'Sent Mail')
 
     def test_move_fallback_copy_delete(self):
         FakeIMAP.fail_move = True
