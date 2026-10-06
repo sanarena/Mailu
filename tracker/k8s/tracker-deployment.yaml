@@ -44,10 +44,10 @@ spec:
               value: /data/tracker.db
             - name: GEO_DB_PATH
               value: /app/geo/location.dat
-            # Safety ramp: parse+log only until live traffic looks clean,
-            # then flip to "false" (second commit) to start tracking.
+            # Safety ramp complete (dry-run verified on live traffic):
+            # actively track outbound mail.
             - name: DRY_RUN
-              value: "true"
+              value: "false"
             - name: SESSION_SECRET
               valueFrom:
                 secretKeyRef:
