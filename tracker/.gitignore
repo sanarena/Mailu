@@ -1,0 +1,5 @@
+# 182MB GeoIP build input: rebuilt from DB-IP Lite, never committed.
+location.dat
+__pycache__/
+*.pyc
+.env

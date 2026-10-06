@@ -80,8 +80,11 @@ City/country comes from [DB-IP Lite](https://db-ip.com/db/lite.php)
 (free monthly CSV, data (c) DB-IP, CC-BY-4.0 - attribution kept
 here as required). The Dockerfile downloads it at build time and
 `tools/build_geo.py` converts it to the compact `location.dat`
-shipped in the image. Refresh by rebuilding (bump `GEO_CSV_URL`
-month) or by mounting a converted file at `GEO_DB_PATH`.
+shipped in the image (`python3 tools/build_geo.py <csv.gz> location.dat`
+before `docker build`; the 182MB `location.dat` is a gitignored build
+input). Refresh by reconverting the current month and rebuilding, or
+by mounting a converted file at `GEO_DB_PATH`. The reader mmaps the
+file, so lookups cost kilobytes of RAM.
 
 Without a database file the tracker still works; lookups return
 unknown and IP/client are still logged.
