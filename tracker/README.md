@@ -18,11 +18,13 @@ How it works:
 2. When a recipient opens the mail, their client fetches the pixel;
    the tracker logs timestamp, IP, GeoIP city/country and the
    parsed mail client/device. Link clicks redirect (302) and log.
-3. The **dashboard** (`https://track.arminnikdel.com`) shows sent
-   mail with open/click status, per-email activity timelines,
-   opt-out settings and a compose box with a per-email tracking
-   toggle. Login uses mailbox credentials (IMAP); users see only
-   their own mail, `TRACKER_ADMINS` see everything.
+3. The **Roundcube suite** (`mail_tracking` plugin) shows sent
+   mail with open/click badges, per-email activity timelines,
+   opt-out settings and a compose toggle. It authenticates with a
+   shared service secret plus the asserted mailbox user; every
+   route is owner-scoped server-side. (The standalone dashboard at
+   `https://track.arminnikdel.com` was retired; the host keeps
+   serving pixel/click URLs from already-sent mail.)
 
 Stdlib-only Python, no dependencies. SQLite storage, offline GeoIP.
 
@@ -33,7 +35,7 @@ Stdlib-only Python, no dependencies. SQLite storage, offline GeoIP.
    PGP signed/encrypted mail, oversize mail (> `MAX_MIME_BYTES`),
    > `MAX_RECIPIENTS` recipients, unparseable or already-tracked
    bodies, mails without any usable text part.
-2. `X-Tracker-Track: no` header (panel compose toggle, power users).
+2. `X-Tracker-Track: no` header (webmail compose toggle, power users).
 3. Sender opt-out list, 1:1 recipient opt-out list.
 4. `X-Tracker-Track: yes` overrides the opt-out lists (explicit
    per-message choice wins).
@@ -56,8 +58,8 @@ resolves to a provider datacenter - the same caveat every tracker
   events, opt-outs, retention purge)
 - `mail_tracker/mime.py` - pixel injection + link rewriting
 - `mail_tracker/milter.py` - sendmail milter v6 protocol server
-- `mail_tracker/web.py` - pixel/click endpoints + dashboard JSON API
-- `mail_tracker/dashboard/` - static single-page app (no CDN, no deps)
+- `mail_tracker/web.py` - pixel/click endpoints + service JSON API
+  (Roundcube plugin auth, owner-scoped; no login, no admin)
 - `mail_tracker/server.py` - processor, HTTP adapter, janitor, main
 - `mail_tracker/geo.py` + `tools/build_geo.py` - offline GeoIP
 - `mail_tracker/ua.py` - client/device sniffing
@@ -67,9 +69,10 @@ resolves to a provider datacenter - the same caveat every tracker
 
 ## Configuration
 
-See `.env.example`. Required secrets: `SESSION_SECRET`, `HMAC_SECRET`
-(generate random 32-byte hex; in k8s they live in the live-only
-`tracker-secrets` Secret, never in git).
+See `.env.example`. Required secrets: `HMAC_SECRET` (link
+signatures) and `TRACKER_API_SECRET` (Roundcube service auth) —
+generate random 32-byte hex; in k8s they live in the live-only
+`tracker-secrets` and `tracker-api` Secrets, never in git.
 
 `DRY_RUN=true` parses and logs every message but never modifies mail
 or writes rows - the safety ramp for first deploy.
@@ -84,33 +87,21 @@ to this daemon over the internal service API: requests carry
 Secret, never in git) plus an asserted `user`, always owner-scoped
 server-side - service callers can never act as admin.
 
-Service-allowed routes: `GET /api/stats`, `GET /api/messages`,
-`GET /api/messages/<id>`, `POST /api/by-mids`, `GET
-/api/optouts`, `POST /api/optouts` (self scope enforced),
-`POST /api/messages/<id>/tracking`. Gated routes
-(`/api/me`, `/api/compose`, `/api/optouts/check`, admin) return
-403 for service auth.
+Service routes (all owner-scoped, all need the service secret):
+`GET /api/stats`, `GET /api/messages`, `GET /api/messages/<id>`,
+`POST /api/by-mids`, `GET /api/optouts`, `POST /api/optouts`
+(self scope enforced), `POST /api/messages/<id>/tracking`.
+Everything else under `/api/` 404s; unauthenticated calls 401.
 
 `POST /api/by-mids {"user": ..., "message_ids": [1..200 MIDs]}`
 returns `{results: {mid: {id, opens, clicks, last_open,
 tracking}}}`; unknown or other users' MIDs are omitted (no leak).
 
-The standalone dashboard (`https://track.arminnikdel.com`) is kept
-until the Roundcube suite is fully verified, then retires.
-
-## Dashboard compose scheduling
-
-The compose box accepts an optional `send_at` (native datetime
-picker). With `SCHEDULER_URL`/`SCHEDULER_SECRET` set, the tracker
-POSTs the MIME to the `mail-scheduler` daemon instead of sending
-live, then stages the identical bytes in the user's `Scheduled`
-folder over IMAP (best-effort; the `filed` response flag reports
-it). The daemon delivers at send time and files the copy to Sent.
-The Message-ID is minted at compose time so the stored bytes, the
-staged copy and the delivered mail all share one MID — the filing
-match depends on it (see the scheduler README's Message-ID
-contract). Without scheduler env, `send_at` is rejected with
-`scheduling unavailable`.
+The standalone dashboard (static SPA, mailbox-password login,
+`/api/me`, `/api/compose`, `/api/optouts/check`, admin views) was
+retired once the Roundcube suite was verified; its routes 404.
+Send-later lives in webmail (scheduler plugin + `mail-scheduler`
+daemon) and never touched this API again.
 
 ## GeoIP data
 

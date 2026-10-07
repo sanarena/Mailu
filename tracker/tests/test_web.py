@@ -1,4 +1,9 @@
-"""Unit tests for the tracker web layer (no network: fake auth/SMTP/geo)."""
+"""Unit tests for the tracker web layer (no network: fake geo).
+
+Only the Roundcube plugin talks to this API (shared service secret
+plus asserted user, owner-scoped). The dashboard is retired: its
+routes must 404 (see test_retired_dashboard_gone).
+"""
 import json
 import os
 import sys
@@ -15,15 +20,9 @@ from tracker.mail_tracker.web import TrackerApp, PIXEL_GIF
 
 class FakeConfig:
     track_host = 'track.x.test'
-    imap_host = 'imap.x.test'
-    imap_port = 993
-    smtp_host = 'smtp.x.test'
-    smtp_port = 465
     local_domains = {'x.test'}
-    admins = {'admin@x.test'}
-    session_secret = 'session-secret-for-tests'
     hmac_secret = 'hmac-secret-for-tests'
-    session_hours = 12
+    service_secret = 'svc'
 
     @property
     def base_url(self):
@@ -32,19 +31,11 @@ class FakeConfig:
 
 class WebTest(unittest.TestCase):
     def setUp(self):
-        for var in ('SESSION_SECRET', 'HMAC_SECRET'):
+        for var in ('HMAC_SECRET', 'TRACKER_API_SECRET'):
             os.environ[var] = 'x'
         self.tmp = tempfile.mkdtemp()
         self.store = Store(os.path.join(self.tmp, 't.db'))
-        self.passwords = {'admin@x.test': 'adminpw', 'a@x.test': 'apw',
-                          'b@x.test': 'bpw'}
-        self.sent = []
-        self.filed = []
-        self.app = TrackerApp(
-            FakeConfig(), self.store, NullGeoDB(),
-            auth_fn=lambda u, p: self.passwords.get(u) == p,
-            smtp_fn=lambda u, p, m: self.sent.append((u, m)),
-            file_fn=lambda *a: self.filed.append(a) or True)
+        self.app = TrackerApp(FakeConfig(), self.store, NullGeoDB())
         self.mid_a = self.store.add_message(
             'tokA', '<a>', 'a@x.test', 'Hello', ['c@y.test'],
             ['http://e.test/'], 10)
@@ -54,72 +45,64 @@ class WebTest(unittest.TestCase):
     def tearDown(self):
         self.store.close()
 
-    def call(self, method, path, body=b'', cookies=None, headers=None,
-             user=None):
+    def call(self, method, path, body=b'', headers=None, user=None,
+             secret='svc'):
         headers = dict(headers or {})
-        if user and cookies is None:
-            headers['cookie'] = f'tt_session={self.app.make_session(user)}'
-        elif cookies:
-            headers['cookie'] = cookies
+        if secret is not None:
+            headers['x-tracker-secret'] = secret
         if isinstance(body, dict):
+            body = dict(body)
+            if user is not None and 'user' not in body:
+                body['user'] = user
             body = json.dumps(body).encode()
+        elif user is not None and method == 'GET' and 'user=' not in path:
+            sep = '&' if '?' in path else '?'
+            path = f'{path}{sep}user={user}'
         return self.app.handle(method, path, headers, body, '9.9.9.9')
 
-    def test_login_logout_me(self):
-        status, headers, body = self.call(
-            'POST', '/api/login', {'user': 'a@x.test', 'password': 'apw'})
-        self.assertEqual(status, 200)
-        self.assertIn('tt_session=', headers['Set-Cookie'])
-        cookie = headers['Set-Cookie'].split(';')[0]
-        status, _, body = self.call('GET', '/api/me', cookies=cookie)
-        self.assertEqual(json.loads(body), {'user': 'a@x.test',
-                                            'admin': False})
-        status, headers, _ = self.call('POST', '/api/logout', cookies=cookie)
-        self.assertEqual(status, 200)
-        self.assertIn('Max-Age=0', headers['Set-Cookie'])
+    def test_retired_dashboard_gone(self):
+        # static SPA
+        for path in ('/', '/index.html', '/app.js', '/styles.css',
+                     '/favicon.svg'):
+            status, _, _ = self.call('GET', path)
+            self.assertEqual(status, 404, path)
+        # session auth is gone entirely
+        for method, path in (('POST', '/api/login'),
+                             ('POST', '/api/logout')):
+            status, _, _ = self.call(method, path, {'user': 'a@x.test'})
+            self.assertEqual(status, 404, path)
+        # dashboard-only routes
+        status, _, _ = self.call('GET', '/api/me', user='a@x.test')
+        self.assertEqual(status, 404)
+        for method, path in (('POST', '/api/compose'),
+                             ('POST', '/api/optouts/check')):
+            status, _, _ = self.call(method, path, {'user': 'a@x.test'},
+                                     user='a@x.test')
+            self.assertEqual(status, 404, path)
 
-    def test_login_rejects_bad_password(self):
-        status, _, _ = self.call(
-            'POST', '/api/login', {'user': 'a@x.test', 'password': 'no'})
-        self.assertEqual(status, 401)
-
-    def test_login_throttled_after_ten_failures(self):
-        for _ in range(10):
-            status, _, _ = self.app.handle(
-                'POST', '/api/login', {},
-                json.dumps({'user': 'a@x.test',
-                            'password': 'wrong'}).encode(), '1.1.1.1')
-            self.assertEqual(status, 401)
-        status, _, _ = self.app.handle(
-            'POST', '/api/login', {},
-            json.dumps({'user': 'a@x.test',
-                        'password': 'wrong'}).encode(), '1.1.1.1')
-        self.assertEqual(status, 429)
-        # another IP is unaffected; success clears the counter
-        status, _, _ = self.app.handle(
-            'POST', '/api/login', {},
-            json.dumps({'user': 'a@x.test',
-                        'password': 'apw'}).encode(), '2.2.2.2')
-        self.assertEqual(status, 200)
-
-    def test_pixel_keeps_ipv6_peer(self):
-        self.app.handle('GET', '/o/tokA.gif', {}, b'', '2001:db8::7')
-        self.assertEqual(self.store.events_of(self.mid_a)[0]['ip'],
-                         '2001:db8::7')
-
-    def test_api_requires_login(self):
-        for method, path in (('GET', '/api/me'), ('GET', '/api/messages'),
+    def test_api_requires_service_auth(self):
+        for method, path in (('GET', '/api/messages'),
                              ('GET', '/api/stats'),
-                             ('GET', '/api/messages/1')):
+                             ('GET', '/api/messages/1'),
+                             ('GET', '/api/optouts')):
             status, _, _ = self.app.handle(method, path, {}, b'')
             self.assertEqual(status, 401, path)
-
-    def test_tampered_session_rejected(self):
-        good = self.app.make_session('a@x.test')
-        bad = good[:-2] + ('AA' if not good.endswith('AA') else 'BB')
-        status, _, _ = self.call('GET', '/api/me',
-                                 cookies=f'tt_session={bad}')
+        # wrong secret, missing user, bad user
+        status, _, _ = self.call('GET', '/api/stats', user='a@x.test',
+                                 secret='nope')
         self.assertEqual(status, 401)
+        status, _, _ = self.call('GET', '/api/stats', secret='svc')
+        self.assertEqual(status, 401)
+        status, _, _ = self.call('GET', '/api/stats', user='not-an-email')
+        self.assertEqual(status, 401)
+
+    def test_service_disabled_without_secret(self):
+        self.app.config.service_secret = ''
+        try:
+            status, _, _ = self.call('GET', '/api/stats', user='a@x.test')
+            self.assertEqual(status, 401)
+        finally:
+            self.app.config.service_secret = 'svc'
 
     def test_list_isolation(self):
         _, _, body = self.call('GET', '/api/messages', user='a@x.test')
@@ -128,9 +111,13 @@ class WebTest(unittest.TestCase):
         self.assertEqual(data['messages'][0]['sender'], 'a@x.test')
         _, _, body = self.call('GET', '/api/messages', user='b@x.test')
         self.assertEqual(json.loads(body)['total'], 1)
+        # all=1 is ignored: there is no admin view anymore
+        _, _, body = self.call('GET', '/api/messages?all=1',
+                               user='a@x.test')
+        self.assertEqual(json.loads(body)['total'], 1)
 
     def test_detail_isolation_no_leak(self):
-        status, _, _ = self.call(f'GET', f'/api/messages/{self.mid_b}',
+        status, _, _ = self.call('GET', f'/api/messages/{self.mid_b}',
                                  user='a@x.test')
         self.assertEqual(status, 404)
         status, _, body = self.call('GET', f'/api/messages/{self.mid_a}',
@@ -146,18 +133,8 @@ class WebTest(unittest.TestCase):
                          [{'idx': 0, 'url': 'http://e.test/'}])
         status, _, body = self.call('GET', f'/api/messages/{self.mid_b}',
                                     user='b@x.test')
-        self.assertEqual(json.loads(body)['links'], [])
-
-    def test_admin_sees_all(self):
-        _, _, body = self.call('GET', '/api/messages?all=1',
-                               user='admin@x.test')
-        self.assertEqual(json.loads(body)['total'], 2)
-        status, _, _ = self.call('GET', f'/api/messages/{self.mid_a}',
-                                 user='admin@x.test')
         self.assertEqual(status, 200)
-        # non-admin ?all=1 is ignored, not an error
-        _, _, body = self.call('GET', '/api/messages?all=1', user='a@x.test')
-        self.assertEqual(json.loads(body)['total'], 1)
+        self.assertEqual(json.loads(body)['links'], [])
 
     def test_kill_switch_authz(self):
         status, _, _ = self.call(
@@ -169,10 +146,6 @@ class WebTest(unittest.TestCase):
             {'enabled': False}, user='a@x.test')
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body)['tracking'])
-        status, _, body = self.call(
-            'POST', f'/api/messages/{self.mid_a}/tracking',
-            {'enabled': True}, user='admin@x.test')
-        self.assertEqual(status, 200)
 
     def test_pixel_logs_and_serves(self):
         status, headers, body = self.call(
@@ -186,6 +159,11 @@ class WebTest(unittest.TestCase):
         self.assertEqual(events[0]['kind'], 'open')
         self.assertEqual(events[0]['ip'], '9.9.9.9')
         self.assertEqual(events[0]['client'], 'Gmail image proxy')
+
+    def test_pixel_keeps_ipv6_peer(self):
+        self.app.handle('GET', '/o/tokA.gif', {}, b'', '2001:db8::7')
+        self.assertEqual(self.store.events_of(self.mid_a)[0]['ip'],
+                         '2001:db8::7')
 
     def test_pixel_unknown_and_disabled(self):
         status, _, body = self.call('GET', '/o/nope.gif')
@@ -226,7 +204,9 @@ class WebTest(unittest.TestCase):
 
     def test_optouts(self):
         _, _, body = self.call('GET', '/api/optouts', user='a@x.test')
-        self.assertEqual(json.loads(body)['sender_opted_out'], False)
+        data = json.loads(body)
+        self.assertEqual(data['sender_opted_out'], False)
+        self.assertNotIn('all_sender_optouts', data)
         status, _, _ = self.call(
             'POST', '/api/optouts',
             {'scope': 'recipient', 'address': 'spam@y.test',
@@ -237,252 +217,44 @@ class WebTest(unittest.TestCase):
         # another user's list is untouched and invisible
         _, _, body = self.call('GET', '/api/optouts', user='b@x.test')
         self.assertEqual(json.loads(body)['recipients'], [])
-        # non-admin cannot opt out other senders
+        # cannot opt out other senders (no admins anymore)
         status, _, _ = self.call(
             'POST', '/api/optouts',
             {'scope': 'sender', 'address': 'b@x.test', 'opted_out': True},
             user='a@x.test')
         self.assertEqual(status, 403)
+        # own sender scope works, address optional
         status, _, _ = self.call(
             'POST', '/api/optouts',
-            {'scope': 'sender', 'address': 'b@x.test', 'opted_out': True},
-            user='admin@x.test')
+            {'scope': 'sender', 'opted_out': True}, user='a@x.test')
         self.assertEqual(status, 200)
-        self.assertTrue(self.store.sender_opted_out('b@x.test'))
-
-    def test_optouts_check(self):
-        _, _, body = self.call(
-            'POST', '/api/optouts/check', {'recipients': ['c@y.test']},
-            user='a@x.test')
-        self.assertTrue(json.loads(body)['track'])
-        self.store.set_recipient_optout('a@x.test', 'c@y.test', True)
-        _, _, body = self.call(
-            'POST', '/api/optouts/check', {'recipients': ['c@y.test']},
-            user='a@x.test')
-        data = json.loads(body)
-        self.assertFalse(data['track'])
-        self.assertIn('opt-out', data['reason'])
-
-    def test_compose(self):
-        status, _, body = self.call('POST', '/api/compose', {
-            'to': ['c@y.test'], 'subject': 'Hi', 'body': 'hello',
-            'track': True, 'password': 'apw'}, user='a@x.test')
-        self.assertEqual(status, 200)
-        self.assertEqual(len(self.sent), 1)
-        user, msg = self.sent[0]
-        self.assertEqual(user, 'a@x.test')
-        self.assertEqual(msg['X-Tracker-Track'], 'yes')
-        self.assertEqual(msg['Subject'], 'Hi')
-
-    def test_compose_schedule(self):
-        import time as _time
-        scheduled = []
-        self.app.schedule_fn = lambda *a: scheduled.append(a) or {'id': 7}
-        self.app.config.scheduler_url = 'http://scheduler:8080'
-        try:
-            send_at = int(_time.time()) + 600
-            status, _, body = self.call('POST', '/api/compose', {
-                'to': ['c@y.test'], 'subject': 'Later', 'body': 'hi',
-                'track': False, 'password': 'apw', 'send_at': send_at},
-                user='a@x.test')
-            self.assertEqual(status, 200)
-            import json as _json
-            res = _json.loads(body)
-            self.assertEqual((res['scheduled'], res['send_at']), (7, send_at))
-            self.assertTrue(res['filed'])
-            self.assertEqual(self.sent, [])  # not sent live
-            user, pw, folder, mime = self.filed[0]
-            self.assertEqual((user, pw, folder),
-                             ('a@x.test', 'apw', 'Scheduled'))
-            self.assertIn(b'Subject: Later', bytes(mime))
-            user, sender, rcpts, mime, sat = scheduled[0]
-            self.assertEqual((user, sender, rcpts, sat),
-                             ('a@x.test', 'a@x.test', ['c@y.test'], send_at))
-            self.assertIn(b'X-Tracker-Track: no', bytes(mime))
-            self.assertIn(b'Subject: Later', bytes(mime))
-            # shared MID: stored bytes and staged copy must match for filing
-            import re as _re
-            m1 = _re.search(rb'Message-ID: (<[^<>]+@x\.test>)', bytes(mime))
-            self.assertIsNotNone(m1)
-            m2 = _re.search(rb'Message-ID: (<[^<>]+>)',
-                            bytes(self.filed[0][3]))
-            self.assertEqual(m1.group(1), m2.group(1))
-            # past send_at rejected
-            status, _, _ = self.call('POST', '/api/compose', {
-                'to': ['c@y.test'], 'subject': 'x', 'body': 'y',
-                'password': 'apw', 'send_at': int(_time.time()) - 10},
-                user='a@x.test')
-            self.assertEqual(status, 400)
-        finally:
-            del self.app.config.scheduler_url
-
-    def test_compose_schedule_file_failure_still_ok(self):
-        import time as _time
-        self.app.schedule_fn = lambda *a: {'id': 9}
-        self.app.file_fn = lambda *a: (_ for _ in ()).throw(
-            ConnectionError('imap down'))
-        self.app.config.scheduler_url = 'http://scheduler:8080'
-        try:
-            send_at = int(_time.time()) + 600
-            status, _, body = self.call('POST', '/api/compose', {
-                'to': ['c@y.test'], 'subject': 'Later', 'body': 'hi',
-                'password': 'apw', 'send_at': send_at}, user='a@x.test')
-            self.assertEqual(status, 200)
-            res = json.loads(body)
-            self.assertEqual(res['scheduled'], 9)
-            self.assertFalse(res['filed'])
-        finally:
-            del self.app.config.scheduler_url
-
-    def test_service_auth_ok_and_gated(self):
-        hdr = {'x-tracker-secret': 'svc'}
-        # disabled when unconfigured
-        status, _, _ = self.call('GET', '/api/stats?user=a@x.test',
-                                 headers=hdr)
-        self.assertEqual(status, 401)
-        self.app.config.service_secret = 'svc'
-        try:
-            status, _, body = self.call('GET', '/api/stats?user=a@x.test',
-                                        headers=hdr)
-            self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)['sent'], 1)
-            # wrong secret, missing user, bad user
-            status, _, _ = self.call('GET', '/api/stats?user=a@x.test',
-                                     headers={'x-tracker-secret': 'nope'})
-            self.assertEqual(status, 401)
-            status, _, _ = self.call('GET', '/api/stats', headers=hdr)
-            self.assertEqual(status, 401)
-            status, _, _ = self.call('GET', '/api/stats?user=not-an-email',
-                                     headers=hdr)
-            self.assertEqual(status, 401)
-        finally:
-            del self.app.config.service_secret
-
-    def test_service_forbidden_routes(self):
-        self.app.config.service_secret = 'svc'
-        try:
-            hdr = {'x-tracker-secret': 'svc'}
-            status, _, _ = self.call('GET', '/api/me?user=a@x.test',
-                                     headers=hdr)
-            self.assertEqual(status, 403)
-            status, _, _ = self.call(
-                'POST', '/api/compose',
-                {'user': 'a@x.test', 'to': ['c@y.test'], 'subject': 'x',
-                 'body': 'y', 'password': 'apw'}, headers=hdr)
-            self.assertEqual(status, 403)
-            status, _, _ = self.call(
-                'POST', '/api/optouts/check',
-                {'user': 'a@x.test', 'recipients': ['c@y.test']},
-                headers=hdr)
-            self.assertEqual(status, 403)
-        finally:
-            del self.app.config.service_secret
-
-    def test_service_scoping(self):
-        self.app.config.service_secret = 'svc'
-        try:
-            hdr = {'x-tracker-secret': 'svc'}
-            # all=1 ignored for service sessions
-            _, _, body = self.call(
-                'GET', '/api/messages?user=a@x.test&all=1', headers=hdr)
-            senders = {m['sender'] for m in json.loads(body)['messages']}
-            self.assertEqual(senders, {'a@x.test'})
-            # other user's detail invisible
-            status, _, _ = self.call(
-                'GET', f'/api/messages/{self.mid_b}?user=a@x.test',
-                headers=hdr)
-            self.assertEqual(status, 404)
-            # own detail visible
-            status, _, body = self.call(
-                'GET', f'/api/messages/{self.mid_a}?user=a@x.test',
-                headers=hdr)
-            self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body)['subject'], 'Hello')
-        finally:
-            del self.app.config.service_secret
-
-    def test_service_optouts_self_only(self):
-        self.app.config.service_secret = 'svc'
-        try:
-            hdr = {'x-tracker-secret': 'svc'}
-            status, _, body = self.call(
-                'POST', '/api/optouts',
-                {'user': 'a@x.test', 'scope': 'sender',
-                 'address': 'a@x.test', 'opted_out': True}, headers=hdr)
-            self.assertEqual(status, 200)
-            self.assertTrue(self.store.sender_opted_out('a@x.test'))
-            status, _, _ = self.call(
-                'POST', '/api/optouts',
-                {'user': 'a@x.test', 'scope': 'sender',
-                 'address': 'b@x.test', 'opted_out': True}, headers=hdr)
-            self.assertEqual(status, 403)
-            status, _, body = self.call(
-                'GET', '/api/optouts?user=a@x.test', headers=hdr)
-            self.assertEqual(status, 200)
-            self.assertTrue(json.loads(body)['sender_opted_out'])
-        finally:
-            del self.app.config.service_secret
+        self.assertTrue(self.store.sender_opted_out('a@x.test'))
 
     def test_by_mids(self):
         self.store.add_event(self.mid_a, 'open')
         self.store.add_event(self.mid_a, 'click')
-        self.app.config.service_secret = 'svc'
-        try:
-            hdr = {'x-tracker-secret': 'svc'}
-            status, _, body = self.call(
-                'POST', '/api/by-mids',
-                {'user': 'a@x.test',
-                 'message_ids': ['<a>', '<b>', '<unknown>']}, headers=hdr)
-            self.assertEqual(status, 200)
-            res = json.loads(body)['results']
-            # own MID mapped, other's + unknown omitted
-            self.assertEqual(set(res), {'<a>'})
-            self.assertEqual(
-                (res['<a>']['opens'], res['<a>']['clicks'],
-                 res['<a>']['id'], res['<a>']['tracking']),
-                (1, 1, self.mid_a, True))
-            self.assertIsNotNone(res['<a>']['last_open'])
-            # validation
-            status, _, _ = self.call(
-                'POST', '/api/by-mids',
-                {'user': 'a@x.test', 'message_ids': []}, headers=hdr)
-            self.assertEqual(status, 400)
-            status, _, _ = self.call(
-                'POST', '/api/by-mids',
-                {'user': 'a@x.test',
-                 'message_ids': ['<x>'] * 201}, headers=hdr)
-            self.assertEqual(status, 400)
-            # cookie sessions can use it too
-            status, _, body = self.call(
-                'POST', '/api/by-mids', {'message_ids': ['<a>']},
-                user='a@x.test')
-            self.assertEqual(status, 200)
-            self.assertEqual(set(json.loads(body)['results']), {'<a>'})
-        finally:
-            del self.app.config.service_secret
-
-    def test_compose_schedule_unavailable(self):
-        import time as _time
-        status, _, _ = self.call('POST', '/api/compose', {
-            'to': ['c@y.test'], 'subject': 'x', 'body': 'y',
-            'password': 'apw', 'send_at': int(_time.time()) + 600},
-            user='a@x.test')
+        status, _, body = self.call(
+            'POST', '/api/by-mids',
+            {'user': 'a@x.test',
+             'message_ids': ['<a>', '<b>', '<unknown>']})
+        self.assertEqual(status, 200)
+        res = json.loads(body)['results']
+        # own MID mapped, other's + unknown omitted
+        self.assertEqual(set(res), {'<a>'})
+        self.assertEqual(
+            (res['<a>']['opens'], res['<a>']['clicks'],
+             res['<a>']['id'], res['<a>']['tracking']),
+            (1, 1, self.mid_a, True))
+        self.assertIsNotNone(res['<a>']['last_open'])
+        # validation
+        status, _, _ = self.call(
+            'POST', '/api/by-mids',
+            {'user': 'a@x.test', 'message_ids': []})
         self.assertEqual(status, 400)
-
-    def test_compose_requires_password_and_validates(self):
-        status, _, _ = self.call('POST', '/api/compose', {
-            'to': ['c@y.test'], 'subject': 'Hi', 'body': 'x',
-            'password': 'wrong'}, user='a@x.test')
-        self.assertEqual(status, 401)
-        status, _, _ = self.call('POST', '/api/compose', {
-            'to': [], 'subject': 'Hi', 'body': 'x', 'password': 'apw'},
-            user='a@x.test')
+        status, _, _ = self.call(
+            'POST', '/api/by-mids',
+            {'user': 'a@x.test', 'message_ids': ['<x>'] * 201})
         self.assertEqual(status, 400)
-        status, _, _ = self.call('POST', '/api/compose', {
-            'to': ['not-an-address'], 'subject': 'H', 'body': 'x',
-            'password': 'apw'}, user='a@x.test')
-        self.assertEqual(status, 400)
-        self.assertEqual(self.sent, [])
 
     def test_stats_scoped(self):
         self.store.add_event(self.mid_a, 'open')
@@ -497,17 +269,6 @@ class WebTest(unittest.TestCase):
         status, _, body = self.app.handle('GET', '/healthz', {}, b'')
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {'ok': True})
-
-    def test_static_dashboard(self):
-        status, headers, body = self.call('GET', '/')
-        self.assertEqual(status, 200)
-        self.assertIn(b'Mail Tracker', body)
-        self.assertIn('text/html', headers['Content-Type'])
-        status, _, body = self.call('GET', '/app.js')
-        self.assertEqual(status, 200)
-        self.assertTrue(body.startswith(b'(function'))
-        status, _, _ = self.call('GET', '/nope.css')
-        self.assertEqual(status, 404)
 
 
 if __name__ == '__main__':

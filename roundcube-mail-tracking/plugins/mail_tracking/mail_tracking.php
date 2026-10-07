@@ -262,6 +262,22 @@ class mail_tracking extends rcube_plugin
         return $args;
     }
 
+    /** "Opened 3 · 2 clicks"; zero parts omitted, clicks pluralized. */
+    private function counts_text($opens, $clicks)
+    {
+        $parts = [];
+        if ($opens > 0) {
+            $parts[] = $this->gettext(['name' => 'openedn',
+                'vars' => ['n' => $opens]]);
+        }
+        if ($clicks > 0) {
+            $parts[] = $clicks === 1 ? $this->gettext('clicked1')
+                : $this->gettext(['name' => 'clickedn',
+                    'vars' => ['n' => $clicks]]);
+        }
+        return implode(' · ', $parts);
+    }
+
     private function badge_html($row)
     {
         if (!is_array($row)) {
@@ -274,15 +290,8 @@ class mail_tracking extends rcube_plugin
                 . rcube::Q($this->gettext('notopened')) . '">'
                 . rcube::Q($this->gettext('unopened')) . '</span>';
         }
-        $title = $this->gettext(['name' => 'badgehint',
-            'vars' => ['opens' => $opens, 'clicks' => $clicks]]);
-        $text = $this->gettext(['name' => 'openedn',
-            'vars' => ['n' => $opens]]);
-        if ($clicks > 0) {
-            $text .= ' · ' . $this->gettext(['name' => 'clickedn',
-                'vars' => ['n' => $clicks]]);
-        }
-        return '<span class="tracking-badge" title="' . rcube::Q($title) . '">'
+        $text = $this->counts_text($opens, $clicks);
+        return '<span class="tracking-badge" title="' . rcube::Q($text) . '">'
             . rcube::Q($text) . '</span>';
     }
 
@@ -316,8 +325,10 @@ class mail_tracking extends rcube_plugin
         $opens = (int) ($row['opens'] ?? 0);
         $clicks = (int) ($row['clicks'] ?? 0);
         $detail = $this->rc->url(['_task' => 'tracking', '_id' => (int) $row['id']]);
-        $value = rcube::Q($this->gettext(['name' => 'summaryline',
-            'vars' => ['opens' => $opens, 'clicks' => $clicks]]))
+        $summary = ($opens === 0 && $clicks === 0)
+            ? $this->gettext('notopened')
+            : $this->counts_text($opens, $clicks);
+        $value = rcube::Q($summary)
             . ' <a href="' . rcube::Q($detail) . '">'
             . rcube::Q($this->gettext('details')) . '</a>';
         if (empty($row['tracking'])) {

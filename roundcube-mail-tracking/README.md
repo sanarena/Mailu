@@ -19,7 +19,8 @@ server-side). The plugin never sees mailbox passwords.
   event timeline (open/click, time, city/country, client, link),
   per-message tracking on/off, and do-not-track management (whole
   mailbox + per-recipient).
-- **Compose** gets a "Track opens and clicks" checkbox (default on).
+- **Compose** gets a "Track opens and clicks" switch (default on),
+  styled like the native message-option switches, first in the options list.
   Unchecking sets `X-Tracker-Track: no` in both `message_ready`
   (so send-later captures carry it regardless of plugin order) and
   `message_before_send` (final send). Checked sends no header, so
@@ -57,7 +58,7 @@ server-side). The plugin never sees mailbox passwords.
 - Roundcube logs to the `stdout` driver here, which php-fpm
   swallows — hook failures are silent in container logs. Debug by
   encoding markers into list cells and reading the list JSON.
-- Compose toggle: checkbox default-on + hidden `_track`; uncheck
+- Compose toggle: custom-switch default-on + hidden `_track`; switch off
   sends `X-Tracker-Track: no` in both `message_ready` (send-later
   capture order) and `message_before_send`. Checked sends no
   header so server opt-outs apply.

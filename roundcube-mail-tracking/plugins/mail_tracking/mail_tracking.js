@@ -29,24 +29,24 @@
     if (document.getElementById('tracking-toggle')) {
       return;
     }
-    // Anchor after the "Save sent message in" row; fall back to the
-    // composition options region, then to the form itself.
-    var anchor = document.getElementById('compose-store-target');
-    var row = anchor && anchor.closest ? anchor.closest('.form-group, .row') : null;
-    var box = (row && row.parentNode) || document.querySelector('#composeoptions, #compose-options')
+    // Bootstrap custom-switch row mirroring the enigma options, placed
+    // FIRST in the options box so it is visible without scrolling.
+    var box = document.querySelector('#composeoptions, #compose-options')
       || document.getElementById('form') || document.body;
     var wrap = document.createElement('div');
-    wrap.className = 'form-group row tracking-toggle-row';
+    wrap.className = 'form-group form-check row tracking-toggle-row';
     var lab = document.createElement('label');
     lab.className = 'col-form-label col-6';
     lab.setAttribute('for', 'tracking-toggle');
     lab.textContent = rcmail.gettext('tracklabel', 'mail_tracking');
     var cell = document.createElement('div');
-    cell.className = 'col-6';
+    cell.className = 'form-check col-6';
+    var sw = document.createElement('div');
+    sw.className = 'custom-control custom-switch';
     var cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.id = 'tracking-toggle';
-    cb.className = 'form-check-input';
+    cb.className = 'form-check-input custom-control-input';
     cb.checked = true;
     cb.addEventListener('change', function() {
       var el = trackInput(true);
@@ -54,11 +54,17 @@
         el.value = cb.checked ? '1' : '0';
       }
     });
-    cell.appendChild(cb);
+    var swlab = document.createElement('label');
+    swlab.className = 'custom-control-label';
+    swlab.setAttribute('for', 'tracking-toggle');
+    sw.appendChild(cb);
+    sw.appendChild(swlab);
+    cell.appendChild(sw);
     wrap.appendChild(lab);
     wrap.appendChild(cell);
-    if (row && row.parentNode === box) {
-      box.insertBefore(wrap, row.nextSibling);
+    var first = box.querySelector(':scope > .form-group, :scope > .row');
+    if (first) {
+      box.insertBefore(wrap, first);
     }
     else {
       box.appendChild(wrap);
@@ -104,6 +110,34 @@
   }
 
   var state = { offset: 0, limit: 50, loading: false, byId: {} };
+  // Deep-link scroll waits until the stats + list above the detail settle,
+  // otherwise their late growth pushes the detail back below the fold.
+  var initScroll = { stats: false, messages: false, armed: false };
+
+  function maybeInitScroll() {
+    if (!initScroll.armed || !initScroll.stats || !initScroll.messages) {
+      return;
+    }
+    var box = el('tracking-detail');
+    if (!box || box.classList.contains('hidden') || !box.children.length) {
+      return;
+    }
+    initScroll.armed = false;
+    if (box.scrollIntoView) {
+      box.scrollIntoView();
+    }
+  }
+
+  function scrollDetail(box) {
+    if (!box || !box.scrollIntoView) {
+      return;
+    }
+    if (initScroll.armed) {
+      maybeInitScroll();
+      return;
+    }
+    box.scrollIntoView();
+  }
 
   function loadStats() {
     rcmail.http_post('stats', {});
@@ -134,12 +168,15 @@
   }
 
   function renderStats(res) {
+    initScroll.stats = true;
     if (!res || res.error) {
       fail();
+      maybeInitScroll();
       return;
     }
     var box = el('tracking-stats');
     if (!box) {
+      maybeInitScroll();
       return;
     }
     box.innerHTML = '';
@@ -158,16 +195,20 @@
       d.appendChild(txt('div', c[1], 'l'));
       box.appendChild(d);
     });
+    maybeInitScroll();
   }
 
   function renderMessages(res) {
     state.loading = false;
+    initScroll.messages = true;
     if (!res || res.error) {
       fail();
+      maybeInitScroll();
       return;
     }
     var tb = document.querySelector('#tracking-messages tbody');
     if (!tb) {
+      maybeInitScroll();
       return;
     }
     (res.messages || []).forEach(function(m) {
@@ -193,6 +234,7 @@
     if (empty) {
       empty.classList.toggle('hidden', state.offset > 0);
     }
+    maybeInitScroll();
   }
 
   function renderDetail(res) {
@@ -213,6 +255,7 @@
     });
     box.innerHTML = '';
     box.classList.remove('hidden');
+    scrollDetail(box);
 
     var back = document.createElement('button');
     back.className = 'btn btn-secondary tracking-back';
@@ -254,7 +297,7 @@
     box.appendChild(txt('h3', rcmail.gettext('events', 'mail_tracking')));
     if (!evs.length) {
       box.appendChild(txt('p', rcmail.gettext('noevents', 'mail_tracking')));
-      box.scrollIntoView();
+      scrollDetail(box);
       return;
     }
     var table = document.createElement('table');
@@ -295,7 +338,7 @@
     });
     table.appendChild(body);
     box.appendChild(table);
-    box.scrollIntoView();
+    scrollDetail(box);
   }
 
   function renderOptouts(res) {
@@ -387,6 +430,7 @@
     loadMessages(true);
     loadOptouts();
     if (rcmail.env.tracking_open_id) {
+      initScroll.armed = true;
       loadDetail(rcmail.env.tracking_open_id);
     }
   }

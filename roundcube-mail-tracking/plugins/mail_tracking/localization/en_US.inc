@@ -3,12 +3,11 @@
 $labels = [];
 $labels['tracking'] = 'Tracking';
 $labels['trackingtitle'] = 'Email open and click tracking';
-$labels['badgehint'] = 'Opened $opens times · Clicked $clicks times';
 $labels['openedn'] = 'Opened $n';
+$labels['clicked1'] = '1 click';
 $labels['clickedn'] = '$n clicks';
 $labels['notopened'] = 'Tracked · not opened yet';
 $labels['unopened'] = 'unopened';
-$labels['summaryline'] = 'Opened $opens · Clicked $clicks';
 $labels['details'] = 'Details';
 $labels['trackingoff'] = 'tracking off';
 $labels['tracklabel'] = 'Track opens and clicks';
