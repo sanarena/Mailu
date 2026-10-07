@@ -74,6 +74,30 @@ See `.env.example`. Required secrets: `SESSION_SECRET`, `HMAC_SECRET`
 `DRY_RUN=true` parses and logs every message but never modifies mail
 or writes rows - the safety ramp for first deploy.
 
+## Roundcube suite (primary UI) + service API
+
+The `mail_tracking` Roundcube plugin (`../roundcube-mail-tracking/`)
+is the primary UI: Sent-list badges, per-message Tracking row,
+stats/messages/detail/opt-outs task, and a compose toggle. It talks
+to this daemon over the internal service API: requests carry
+`X-Tracker-Secret: <TRACKER_API_SECRET>` (live-only `tracker-api`
+Secret, never in git) plus an asserted `user`, always owner-scoped
+server-side - service callers can never act as admin.
+
+Service-allowed routes: `GET /api/stats`, `GET /api/messages`,
+`GET /api/messages/<id>`, `POST /api/by-mids`, `GET
+/api/optouts`, `POST /api/optouts` (self scope enforced),
+`POST /api/messages/<id>/tracking`. Gated routes
+(`/api/me`, `/api/compose`, `/api/optouts/check`, admin) return
+403 for service auth.
+
+`POST /api/by-mids {"user": ..., "message_ids": [1..200 MIDs]}`
+returns `{results: {mid: {id, opens, clicks, last_open,
+tracking}}}`; unknown or other users' MIDs are omitted (no leak).
+
+The standalone dashboard (`https://track.arminnikdel.com`) is kept
+until the Roundcube suite is fully verified, then retires.
+
 ## Dashboard compose scheduling
 
 The compose box accepts an optional `send_at` (native datetime

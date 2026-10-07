@@ -52,6 +52,7 @@ class Config:
         self.scheduler_url = _get('SCHEDULER_URL', '')
         self.scheduler_secret = _get('SCHEDULER_SECRET', '')
         self.scheduled_folder = _get('SCHEDULED_FOLDER', 'Scheduled')
+        self.service_secret = _get('TRACKER_API_SECRET', '')
 
     @property
     def base_url(self):

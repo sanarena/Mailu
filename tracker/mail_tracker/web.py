@@ -86,6 +86,44 @@ class TrackerApp:
             return None
         return {'user': user, 'admin': user in self.config.admins}
 
+    def check_service(self, headers, query, body, method):
+        """Service auth for the Roundcube plugin. Returns a non-admin
+        session for the asserted user, or None. Never grants admin."""
+        secret = getattr(self.config, 'service_secret', '') or ''
+        if not secret:
+            return None
+        presented = headers.get('x-tracker-secret', '')
+        if not presented or not hmac.compare_digest(presented, secret):
+            return None
+        if method == 'GET':
+            user = (query.get('user') or [''])[0]
+        else:
+            try:
+                data = json.loads(body.decode() or '{}') or {}
+            except ValueError:
+                return None
+            user = data.get('user') or ''
+        user = (user or '').strip().lower()
+        if '@' not in user or len(user) > 320:
+            return None
+        return {'user': user, 'admin': False, 'service': True}
+
+    @staticmethod
+    def _service_allowed(method, route):
+        if method == 'GET' and route in (
+                '/api/messages', '/api/stats', '/api/optouts'):
+            return True
+        if route == '/api/optouts' and method == 'POST':
+            # self-only: _api_optouts_post 403s non-admins touching
+            # anyone else's sender scope; recipient scope is always self
+            return True
+        if route.startswith('/api/messages/'):
+            # GET detail + POST tracking toggle; both owner-scoped inside
+            return True
+        if method == 'POST' and route == '/api/by-mids':
+            return True
+        return False
+
     # -- entry point ---------------------------------------------------
     def handle(self, method, path, headers, body, remote_addr=''):
         parsed = urlparse(path)
@@ -113,6 +151,13 @@ class TrackerApp:
             session = self.check_session(cookies)
             if route == '/api/logout' and method == 'POST':
                 return self._clear_session()
+            if session is None:
+                # Service auth (Roundcube plugin): shared secret plus an
+                # asserted user, restricted to read/self routes below.
+                session = self.check_service(headers, query, body, method)
+                if session is not None and not self._service_allowed(
+                        method, route):
+                    return self._json(403, {'error': 'forbidden'})
             if session is None:
                 return self._json(401, {'error': 'login required'})
             return self._api(method, route, query, body, session)
@@ -291,6 +336,8 @@ class TrackerApp:
             return self._api_optouts_check(body, session)
         if route == '/api/compose' and method == 'POST':
             return self._api_compose(body, session)
+        if route == '/api/by-mids' and method == 'POST':
+            return self._api_by_mids(body, session)
         if route.startswith('/api/messages/'):
             return self._api_message(method, route, body, session)
         return self._json(404, {'error': 'not found'})
@@ -322,6 +369,24 @@ class TrackerApp:
                 'last_open': counts_msg.get('last_open')})
         return self._json(200, {'messages': out,
                                 'total': self.store.count_messages(sender)})
+
+    def _api_by_mids(self, body, session):
+        try:
+            data = json.loads(body.decode() or '{}')
+        except ValueError:
+            return self._json(400, {'error': 'bad json'})
+        mids = data.get('message_ids')
+        if not isinstance(mids, list) or not mids or len(mids) > 200:
+            return self._json(400, {'error': '1-200 message_ids required'})
+        clean = []
+        for mid in mids:
+            mid = mid.strip() if isinstance(mid, str) else ''
+            if mid and len(mid) <= 500 and '\n' not in mid and '\r' not in mid:
+                clean.append(mid)
+        if not clean:
+            return self._json(400, {'error': 'bad message_ids'})
+        return self._json(200, {'results': self.store.summaries_by_mid(
+            session['user'], clean)})
 
     def _api_stats(self, query, session):
         sender = self._scope_sender(query, session)

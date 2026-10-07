@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS messages(
 );
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender, id);
 CREATE INDEX IF NOT EXISTS idx_messages_token ON messages(token);
+CREATE INDEX IF NOT EXISTS idx_messages_mid ON messages(sender, message_id);
 CREATE TABLE IF NOT EXISTS recipients(
   id INTEGER PRIMARY KEY,
   message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -203,6 +204,27 @@ class Store:
                 'SELECT kind, at, ip, geo_country, geo_city, client, device,'
                 ' link_idx FROM events WHERE message_id=? ORDER BY id',
                 (mid,)).fetchall()]
+
+    def summaries_by_mid(self, sender, mids):
+        """{message_id: {id, opens, clicks, last_open, tracking}} for the
+        Roundcube list badges. Unknown MIDs are omitted (no leak)."""
+        mids = [m for m in (mids or []) if m]
+        if not mids:
+            return {}
+        with self._lock:
+            place = ','.join('?' for _ in mids)
+            rows = self._db.execute(
+                'SELECT m.message_id mid, m.id id, m.tracking tr,'
+                ' SUM(e.kind="open") opens, SUM(e.kind="click") clicks,'
+                ' MAX(CASE WHEN e.kind="open" THEN e.at END) last_open'
+                ' FROM messages m LEFT JOIN events e ON e.message_id=m.id'
+                ' WHERE m.sender=? AND m.message_id IN (' + place + ')'
+                ' GROUP BY m.id', [_norm_email(sender)] + list(mids))
+            return {r['mid']: {'id': r['id'], 'opens': r['opens'] or 0,
+                               'clicks': r['clicks'] or 0,
+                               'last_open': r['last_open'],
+                               'tracking': bool(r['tr'])}
+                    for r in rows.fetchall()}
 
     def event_counts(self, sender=None):
         """Per-message open/click counts (and last-open) for list views."""

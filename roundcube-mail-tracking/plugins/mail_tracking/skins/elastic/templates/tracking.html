@@ -1,0 +1,48 @@
+<roundcube:include file="includes/layout.html" />
+
+<h1 class="voice"><roundcube:label name="mail_tracking.tracking" /></h1>
+
+<div id="tracking-page" class="formcontent">
+	<div id="tracking-error" class="alert alert-danger hidden" role="alert"></div>
+
+	<h2><roundcube:label name="mail_tracking.tracking" /></h2>
+	<div id="tracking-stats" aria-live="polite"></div>
+
+	<h2><roundcube:label name="mail_tracking.messages" /></h2>
+	<div class="table-responsive">
+	<table id="tracking-messages" class="table table-striped table-hover">
+		<thead><tr>
+			<th><roundcube:label name="mail_tracking.colto" /></th>
+			<th><roundcube:label name="mail_tracking.colsubject" /></th>
+			<th><roundcube:label name="mail_tracking.colsent" /></th>
+			<th><roundcube:label name="mail_tracking.colopens" /></th>
+			<th><roundcube:label name="mail_tracking.colclicks" /></th>
+		</tr></thead>
+		<tbody></tbody>
+	</table>
+	</div>
+	<p id="tracking-empty" class="hidden"><roundcube:label name="mail_tracking.nomessages" /></p>
+	<button id="tracking-more" class="btn btn-secondary hidden"><roundcube:label name="mail_tracking.more" /></button>
+
+	<div id="tracking-detail" class="hidden"></div>
+
+	<h2><roundcube:label name="mail_tracking.optouts" /></h2>
+	<div class="form-group row">
+		<label class="col-form-label col-6" for="tracking-optsender"><roundcube:label name="mail_tracking.optsender" /></label>
+		<div class="col-6"><input type="checkbox" id="tracking-optsender" class="form-check-input"></div>
+	</div>
+	<div class="form-group row">
+		<label class="col-form-label col-6"><roundcube:label name="mail_tracking.opthdr" /></label>
+		<div class="col-6">
+			<ul id="tracking-optlist" class="list-unstyled"></ul>
+			<div class="input-group">
+				<input type="email" id="tracking-optadd" class="form-control" placeholder="name@example.com">
+				<div class="input-group-append">
+					<button id="tracking-optadd-btn" class="btn btn-secondary"><roundcube:label name="mail_tracking.optadd" /></button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<roundcube:include file="includes/footer.html" />

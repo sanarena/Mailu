@@ -334,6 +334,133 @@ class WebTest(unittest.TestCase):
         finally:
             del self.app.config.scheduler_url
 
+    def test_service_auth_ok_and_gated(self):
+        hdr = {'x-tracker-secret': 'svc'}
+        # disabled when unconfigured
+        status, _, _ = self.call('GET', '/api/stats?user=a@x.test',
+                                 headers=hdr)
+        self.assertEqual(status, 401)
+        self.app.config.service_secret = 'svc'
+        try:
+            status, _, body = self.call('GET', '/api/stats?user=a@x.test',
+                                        headers=hdr)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['sent'], 1)
+            # wrong secret, missing user, bad user
+            status, _, _ = self.call('GET', '/api/stats?user=a@x.test',
+                                     headers={'x-tracker-secret': 'nope'})
+            self.assertEqual(status, 401)
+            status, _, _ = self.call('GET', '/api/stats', headers=hdr)
+            self.assertEqual(status, 401)
+            status, _, _ = self.call('GET', '/api/stats?user=not-an-email',
+                                     headers=hdr)
+            self.assertEqual(status, 401)
+        finally:
+            del self.app.config.service_secret
+
+    def test_service_forbidden_routes(self):
+        self.app.config.service_secret = 'svc'
+        try:
+            hdr = {'x-tracker-secret': 'svc'}
+            status, _, _ = self.call('GET', '/api/me?user=a@x.test',
+                                     headers=hdr)
+            self.assertEqual(status, 403)
+            status, _, _ = self.call(
+                'POST', '/api/compose',
+                {'user': 'a@x.test', 'to': ['c@y.test'], 'subject': 'x',
+                 'body': 'y', 'password': 'apw'}, headers=hdr)
+            self.assertEqual(status, 403)
+            status, _, _ = self.call(
+                'POST', '/api/optouts/check',
+                {'user': 'a@x.test', 'recipients': ['c@y.test']},
+                headers=hdr)
+            self.assertEqual(status, 403)
+        finally:
+            del self.app.config.service_secret
+
+    def test_service_scoping(self):
+        self.app.config.service_secret = 'svc'
+        try:
+            hdr = {'x-tracker-secret': 'svc'}
+            # all=1 ignored for service sessions
+            _, _, body = self.call(
+                'GET', '/api/messages?user=a@x.test&all=1', headers=hdr)
+            senders = {m['sender'] for m in json.loads(body)['messages']}
+            self.assertEqual(senders, {'a@x.test'})
+            # other user's detail invisible
+            status, _, _ = self.call(
+                'GET', f'/api/messages/{self.mid_b}?user=a@x.test',
+                headers=hdr)
+            self.assertEqual(status, 404)
+            # own detail visible
+            status, _, body = self.call(
+                'GET', f'/api/messages/{self.mid_a}?user=a@x.test',
+                headers=hdr)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['subject'], 'Hello')
+        finally:
+            del self.app.config.service_secret
+
+    def test_service_optouts_self_only(self):
+        self.app.config.service_secret = 'svc'
+        try:
+            hdr = {'x-tracker-secret': 'svc'}
+            status, _, body = self.call(
+                'POST', '/api/optouts',
+                {'user': 'a@x.test', 'scope': 'sender',
+                 'address': 'a@x.test', 'opted_out': True}, headers=hdr)
+            self.assertEqual(status, 200)
+            self.assertTrue(self.store.sender_opted_out('a@x.test'))
+            status, _, _ = self.call(
+                'POST', '/api/optouts',
+                {'user': 'a@x.test', 'scope': 'sender',
+                 'address': 'b@x.test', 'opted_out': True}, headers=hdr)
+            self.assertEqual(status, 403)
+            status, _, body = self.call(
+                'GET', '/api/optouts?user=a@x.test', headers=hdr)
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)['sender_opted_out'])
+        finally:
+            del self.app.config.service_secret
+
+    def test_by_mids(self):
+        self.store.add_event(self.mid_a, 'open')
+        self.store.add_event(self.mid_a, 'click')
+        self.app.config.service_secret = 'svc'
+        try:
+            hdr = {'x-tracker-secret': 'svc'}
+            status, _, body = self.call(
+                'POST', '/api/by-mids',
+                {'user': 'a@x.test',
+                 'message_ids': ['<a>', '<b>', '<unknown>']}, headers=hdr)
+            self.assertEqual(status, 200)
+            res = json.loads(body)['results']
+            # own MID mapped, other's + unknown omitted
+            self.assertEqual(set(res), {'<a>'})
+            self.assertEqual(
+                (res['<a>']['opens'], res['<a>']['clicks'],
+                 res['<a>']['id'], res['<a>']['tracking']),
+                (1, 1, self.mid_a, True))
+            self.assertIsNotNone(res['<a>']['last_open'])
+            # validation
+            status, _, _ = self.call(
+                'POST', '/api/by-mids',
+                {'user': 'a@x.test', 'message_ids': []}, headers=hdr)
+            self.assertEqual(status, 400)
+            status, _, _ = self.call(
+                'POST', '/api/by-mids',
+                {'user': 'a@x.test',
+                 'message_ids': ['<x>'] * 201}, headers=hdr)
+            self.assertEqual(status, 400)
+            # cookie sessions can use it too
+            status, _, body = self.call(
+                'POST', '/api/by-mids', {'message_ids': ['<a>']},
+                user='a@x.test')
+            self.assertEqual(status, 200)
+            self.assertEqual(set(json.loads(body)['results']), {'<a>'})
+        finally:
+            del self.app.config.service_secret
+
     def test_compose_schedule_unavailable(self):
         import time as _time
         status, _, _ = self.call('POST', '/api/compose', {
