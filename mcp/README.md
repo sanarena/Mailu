@@ -121,9 +121,12 @@ failed logins are rate-limited per IP (429); bodies are capped at
 load balancer / ingress.
 
 Kubernetes: `mcp/k8s/deployment.yaml` (single replica, `/healthz`
-liveness/readiness) + `mcp/k8s/service.yaml` (`LoadBalancer`) read all
-config from the `mailu-mcp-env` Secret (see `secret.example.yaml`,
-which now includes `MCP_HTTP_ADMIN_TOKEN`).
+liveness/readiness, state on the `mail-mcp-state` PVC) +
+`mcp/k8s/service.yaml` (ClusterIP) + `mcp/k8s/ingress.yaml`
+(`https://mcp.arminnikdel.com`, TLS at the ingress). Secrets come
+from the live-only `mailu-creds` (`api-token`) and `mcp-admin-token`
+(`token`) Secrets, never from git. These manifests mirror the Flux
+repo `mailu/mcp-*.yaml`, which is the deploy source of truth.
 
 ## Verify (no live server needed)
 

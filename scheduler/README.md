@@ -24,7 +24,7 @@ How it works:
 - `sched/config.py` - env config
 - `sched/db.py` - SQLite store (scheduled, snoozes, retention purge)
 - `sched/server.py` - HTTP API, poller, SMTP/IMAP workers, main
-- `tests/` - unit tests (`python3 -m unittest discover -s
+- `tests/` - 25 unit tests (`python3 -m unittest discover -s
   scheduler/tests` from the repo root; SMTP/IMAP faked)
 - `k8s/` - manifests (mirrored into the Flux repo `mailu/` dir)
 

@@ -63,7 +63,7 @@ resolves to a provider datacenter - the same caveat every tracker
 - `mail_tracker/server.py` - processor, HTTP adapter, janitor, main
 - `mail_tracker/geo.py` + `tools/build_geo.py` - offline GeoIP
 - `mail_tracker/ua.py` - client/device sniffing
-- `tests/` - 105 unit tests (`python3 -m unittest discover -s tracker/tests`
+- `tests/` - 96 unit tests (`python3 -m unittest discover -s tracker/tests`
   from the repo root)
 - `k8s/` - manifests (also mirrored into the Flux repo `mailu/` dir)
 

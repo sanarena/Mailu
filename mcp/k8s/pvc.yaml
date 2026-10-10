@@ -1,0 +1,13 @@
+# Durable Gmail-import idempotency state for the MCP server. Without this,
+# a pod restart would forget completed copies and re-import duplicates.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mail-mcp-state
+  namespace: mail
+spec:
+  storageClassName: longhorn-mailu
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

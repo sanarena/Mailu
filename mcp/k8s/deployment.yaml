@@ -1,53 +1,90 @@
-# Long-lived MCP server behind a public load balancer.
-# Needs: image pushed, mcp/k8s/secret.yaml applied (Mailu creds +
-# MCP_HTTP_ADMIN_TOKEN). Single replica: Gmail import state is a local file,
-# so copies must not run on two pods at once.
-#   kubectl apply -f mcp/k8s/secret.yaml
-#   kubectl apply -f mcp/k8s/deployment.yaml -f mcp/k8s/service.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mailu-mcp
-  namespace: default
+  name: mail-mcp
+  namespace: mail
+  labels:
+    app: mail-mcp
 spec:
+  # Single replica: Gmail import state lives on one RWO volume.
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: mailu-mcp
+      app: mail-mcp
   template:
     metadata:
       labels:
-        app: mailu-mcp
+        app: mail-mcp
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mcp
-          image: <you>/mailu-mcp:latest
-          imagePullPolicy: Always
+          image: sanarena/mailu-mcp:20261004144051
+          imagePullPolicy: IfNotPresent
           args: ["--http", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - name: http
               containerPort: 8000
-          envFrom:
-            - secretRef:
-                name: mailu-mcp-env
+          env:
+            # NOTE: talk to FRONT over implicit TLS via the public
+            # hostname (hairpin through mail-lb). Backend dovecot takes no
+            # passwords by design (nopassword trust); front:143 plaintext
+            # refuses logins (PRIVACYREQUIRED); front:993/465 present the
+            # LE cert, which only verifies against imap.* — hence the
+            # public name, not the ClusterIP service.
+            - name: MAILU_IMAP_HOST
+              value: imap.arminnikdel.com
+            - name: MAILU_IMAP_PORT
+              value: "993"
+            - name: MAILU_SMTP_HOST
+              value: imap.arminnikdel.com
+            - name: MAILU_SMTP_PORT
+              value: "465"
+            - name: MAILU_API_BASE
+              value: http://mail-mailu-admin:8080/api
+            - name: MAILU_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mailu-creds
+                  key: api-token
+            - name: MAILU_DEFAULT_FROM
+              value: postmaster@arminnikdel.com
+            - name: MAILU_TIMEOUT
+              value: "60"
+            - name: MAILU_IMPORT_STATE
+              value: /state/gmail-import.json
+            # Live-only secret, created out-of-band (see helmrelease.yaml).
+            - name: MCP_HTTP_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-admin-token
+                  key: token
+          volumeMounts:
+            - name: state
+              mountPath: /state
           livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 20
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
           readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 3
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            requests:
-              cpu: "50m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: mail-mcp-state
