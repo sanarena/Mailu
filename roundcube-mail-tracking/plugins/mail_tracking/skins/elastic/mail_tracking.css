@@ -1,0 +1,46 @@
+/* mail_tracking: badges + task page. Native Elastic look. */
+.tracking-badge {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 0.85em;
+  padding: 0.1em 0.5em;
+  border-radius: 1em;
+  background: #e8f0e9;
+  color: #2e6b34;
+}
+.tracking-badge.muted {
+  background: transparent;
+  color: #8a8f98;
+}
+.tracking-off {
+  color: #8a8f98;
+}
+#tracking-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75em;
+  margin-bottom: 1em;
+}
+.tracking-stat {
+  min-width: 7em;
+  padding: 0.6em 0.9em;
+  border: 1px solid #d4dbde;
+  border-radius: 0.4em;
+}
+.tracking-stat .n {
+  font-size: 1.5em;
+  font-weight: 600;
+}
+.tracking-stat .l {
+  color: #5a6268;
+  font-size: 0.85em;
+}
+#tracking-detail {
+  margin-top: 1em;
+}
+#tracking-events td {
+  vertical-align: top;
+}
+.tracking-back {
+  margin-bottom: 0.75em;
+}

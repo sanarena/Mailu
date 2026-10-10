@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mail-tracker
+  namespace: mail
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # RWO volume: never two writers
+  selector:
+    matchLabels:
+      app: mail-tracker
+  template:
+    metadata:
+      labels:
+        app: mail-tracker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: tracker
+          image: sanarena/mailu-tracker:1.0.12
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: milter
+              containerPort: 8899
+            - name: web
+              containerPort: 8080
+          env:
+            - name: TRACK_HOST
+              value: track.arminnikdel.com
+            - name: LOCAL_DOMAINS
+              value: arminnikdel.com
+            - name: DB_PATH
+              value: /data/tracker.db
+            - name: GEO_DB_PATH
+              value: /app/geo/location.dat
+            # Safety ramp complete (dry-run verified on live traffic):
+            # actively track outbound mail.
+            - name: DRY_RUN
+              value: "false"
+            - name: HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tracker-secrets
+                  key: hmac-secret
+            - name: TRACKER_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tracker-api
+                  key: api-secret
+          livenessProbe:
+            httpGet: {path: /healthz, port: web}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: {path: /healthz, port: web}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 1000m, memory: 1Gi}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mail-tracker-data

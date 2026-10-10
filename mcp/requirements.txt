@@ -1,0 +1,5 @@
+# No third-party dependencies — Python 3.9+ stdlib only.
+# Optional (only if you prefer the Google client libraries over the
+# built-in urllib Gmail REST client in mailu_mcp/gmail_import.py):
+#   google-api-python-client>=2.0
+#   google-auth>=2.0

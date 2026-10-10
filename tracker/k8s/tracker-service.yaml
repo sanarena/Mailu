@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mail-tracker
+  namespace: mail
+spec:
+  selector:
+    app: mail-tracker
+  ports:
+    - name: milter
+      port: 8899
+      targetPort: milter
+    - name: web
+      port: 8080
+      targetPort: web

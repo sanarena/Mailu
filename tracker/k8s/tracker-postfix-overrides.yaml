@@ -1,0 +1,16 @@
+# Postfix main.cf overrides for mail tracking. Mounted at /overrides in
+# the postfix pod (see mailu/helmrelease.yaml postfix.extraVolumes);
+# start.py applies each line with `postconf -e` at boot.
+# The tracker milter runs FIRST so rspamd scans and DKIM-signs the
+# already-tracked body.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tracker-postfix-overrides
+  namespace: mail
+data:
+  postfix.cf: |
+    smtpd_milters = inet:mail-tracker.mail.svc.cluster.local:8899, inet:mail-mailu-rspamd.mail.svc.cluster.local:11332
+    # Scheduler (snooze/send-later) matches mail by Message-ID; guarantee one
+    # on every submission so MID-less clients can't strand mail in Snoozed.
+    always_add_missing_headers = yes
