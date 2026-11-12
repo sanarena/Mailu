@@ -120,14 +120,14 @@ unknown and IP/client are still logged.
 
 ## Operations
 
-- Build (arm64, matches the cluster): on the Pi build host
-  (`DOCKER_HOST=tcp://192.168.178.85:2376`)
+- Build (arm64, matches the cluster): on the arm64 build host
+  (`DOCKER_HOST` per the private ops notes)
   `docker build -t sanarena/mailu-tracker:<ver> tracker && docker push ...`.
   Verify `docker image inspect --format '{{.Architecture}}'`. Current
   live version: see `flux/mailu/tracker-deployment.yaml` image tag.
 - Deploy: manifests live in the Flux repo `mailu/tracker-*.yaml`;
   push to `origin/main`, then `flux reconcile source git flux-system`
-  and `flux reconcile kustomization mailu -n hodlticker`. Postfix
+  and `flux reconcile kustomization mailu -n <flux namespace>`. Postfix
   picks up `smtpd_milters` from the overrides ConfigMap **at boot
   only** - after a ConfigMap change, `kubectl rollout restart
   deploy/mail-mailu-postfix` (a Flux sync alone does not restart it).

@@ -63,8 +63,9 @@ never two writers).
 
 ## Deploy pipeline (source of truth: Flux repo)
 
-Live manifests live in the Flux repo (`mailu/*.yaml`), applied by the
-`mailu` Kustomization in namespace `hodlticker`. The `k8s/`
+Live manifests live in the (private) Flux repo (`mailu/*.yaml`),
+applied by its `mailu` Kustomization. Cluster access details (kubeconfig,
+namespaces, build host) are kept in the private ops notes, not here. The `k8s/`
 directories in this repo are byte-identical mirrors for reference —
 change process runs through Flux, then mirror back here.
 
@@ -74,10 +75,9 @@ change process runs through Flux, then mirror back here.
    README](tracker/README.md); verify `{{.Architecture}}`).
 2. Bump the tag in the Flux repo `mailu/` manifests, push
    `origin/main`.
-3. `export KUBECONFIG=~/k8s-hetzner/kube/k3s-hetzner/kubeconfig`
-   (the default `~/.kube/config` returns `Unauthorized`), then
-   `flux reconcile source git flux-system` and
-   `flux reconcile kustomization mailu -n hodlticker`.
+3. With the cluster kubeconfig (see the private ops notes):
+   `flux reconcile source git flux-system -n flux-system`, then
+   `flux reconcile kustomization mailu -n <flux namespace>`.
 4. Postfix reads `smtpd_milters` and `always_add_missing_headers` from
    the overrides ConfigMap **at boot only** — after such a change,
    `kubectl -n mail rollout restart deploy/mail-mailu-postfix` (a Flux
