@@ -1,0 +1,36 @@
+/* mail_backup: Settings > Backup. Native Elastic look. */
+
+/* Section icon in the settings list (Font Awesome 5 solid, Elastic's
+   "Icons" font). Without it the row shows a blank icon slot. */
+.listing.iconized tr.backup > td.section:before,
+.listing.iconized li.backup > a:before {
+  content: "\f382"; /* cloud-upload-alt */
+}
+
+.backup-intro {
+  margin: 0;
+  max-width: 48rem;
+}
+
+.backup-hint {
+  display: block;
+  font-size: 0.85em;
+  color: #6c757d;
+  margin-top: 0.2rem;
+}
+
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.backup-result.ok {
+  color: #2e7d32;
+}
+
+.backup-result.fail,
+.backup-error {
+  color: #c62828;
+}
