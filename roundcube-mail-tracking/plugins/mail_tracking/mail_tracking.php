@@ -34,8 +34,6 @@ class mail_tracking extends rcube_plugin
 
         $task = $this->rc->task;
         if ($task == 'mail') {
-            $this->include_script('mail_tracking.js');
-            $this->include_stylesheet('skins/elastic/mail_tracking.css');
             $this->add_hook('messages_list', [$this, 'hook_messages_list']);
             $this->add_hook('message_headers_output', [$this, 'hook_headers']);
             // Header must exist before mail_scheduler captures the MIME
@@ -45,8 +43,6 @@ class mail_tracking extends rcube_plugin
             $this->add_hook('message_before_send', [$this, 'hook_track_header']);
         }
         elseif ($task == 'tracking') {
-            $this->include_script('mail_tracking.js');
-            $this->include_stylesheet('skins/elastic/mail_tracking.css');
             $this->register_action('index', [$this, 'action_index']);
             $this->register_action('stats', [$this, 'action_stats']);
             $this->register_action('messages', [$this, 'action_messages']);
@@ -56,6 +52,11 @@ class mail_tracking extends rcube_plugin
         }
 
         if ($this->rc->output->type == 'html') {
+            // Every task: the Tracking button (rail + hellomail account
+            // menu) needs its icon CSS and menu JS on mail, contacts and
+            // settings pages too. The JS entry points are task-guarded.
+            $this->include_script('mail_tracking.js');
+            $this->include_stylesheet('skins/elastic/mail_tracking.css');
             $this->add_button([
                 'command' => 'tracking',
                 'type' => 'link',

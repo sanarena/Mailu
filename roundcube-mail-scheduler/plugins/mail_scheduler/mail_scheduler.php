@@ -73,6 +73,9 @@ class mail_scheduler extends rcube_plugin
             ], 'toolbar');
             $this->rc->output->set_env('scheduler_snooze_folder',
                 $this->rc->config->get('scheduler_snooze_folder', 'Snoozed'));
+            // folder icon only (mail_scheduler.js tags the folder list)
+            $this->rc->output->set_env('scheduler_scheduled_folder',
+                $this->rc->config->get('scheduler_scheduled_folder', 'Scheduled'));
         }
         elseif ($action == 'compose') {
             $this->add_button([

@@ -62,6 +62,17 @@ server-side). The plugin never sees mailbox passwords.
   sends `X-Tracker-Track: no` in both `message_ready` (send-later
   capture order) and `message_before_send`. Checked sends no
   header so server opt-outs apply.
+- Navigation (1.0.8): on wide screens the hellomail skin hides the
+  task rail (`html.hm-no-rail`) and moves task switching into its
+  account menu (`#hm-account-menu`), which lists only core tasks.
+  The JS adds Tracking after Contacts there, deferred with
+  `setTimeout(0)` because hellomail builds the menu in an `init`
+  listener registered after plugin scripts. The click delegates to
+  the rail button. The script and CSS load in every HTML task (the
+  entry points are task-guarded), so the icon (`chart-line`) shows on
+  contacts/settings pages too. The task template uses the standard
+  Elastic frame (`includes/menu.html` + `#layout-content` header +
+  `.scroller`); without it the page had no way back to Mail.
 
 ## Checks
 

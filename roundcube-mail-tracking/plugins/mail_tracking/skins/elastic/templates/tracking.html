@@ -1,7 +1,16 @@
 <roundcube:include file="includes/layout.html" />
+<roundcube:include file="includes/menu.html" />
 
 <h1 class="voice"><roundcube:label name="mail_tracking.tracking" /></h1>
 
+<!-- Standard Elastic page frame (task menu + header + scroller), so the
+     page keeps the navigation back to Mail/Contacts/Settings. -->
+<div id="layout-content" class="selected no-navbar" role="main">
+	<div class="header">
+		<a class="button icon task-menu-button" href="#menu"><span class="inner"><roundcube:label name="menu" /></span></a>
+		<span class="header-title"><roundcube:label name="mail_tracking.tracking" /></span>
+	</div>
+	<div class="scroller">
 <div id="tracking-page" class="formcontent">
 	<div id="tracking-error" class="alert alert-danger hidden" role="alert"></div>
 
@@ -42,6 +51,8 @@
 				</div>
 			</div>
 		</div>
+	</div>
+</div>
 	</div>
 </div>
 

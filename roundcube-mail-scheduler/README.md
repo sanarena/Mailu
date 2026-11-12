@@ -57,6 +57,13 @@ hellomail-compatible), backed by the `mail-scheduler` daemon.
   except inside `Snoozed`, Wake now only inside it.
 - Mails without Message-ID report as `mid:<seq>` and are refused
   with a clear message (the daemon 400s them too).
+- Icons (1.0.7): Elastic draws every toolbar/menu icon from
+  `.menu a.<class>:before` in its `Icons` font (Font Awesome 5). A
+  custom button class without such a rule renders a blank
+  placeholder. Snooze = bell-slash, Wake now = bell, Send later =
+  clock (outline weight 400). The Snoozed/Scheduled folders get the
+  same icons via `scheduler-snoozed`/`scheduler-scheduled` classes
+  that the JS adds from `env.scheduler_*_folder`.
 
 ## Checks
 

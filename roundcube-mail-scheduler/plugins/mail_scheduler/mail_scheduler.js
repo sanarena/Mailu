@@ -140,7 +140,45 @@
     rcmail.enable_command('plugin.scheduler.unsnooze', has && inSnoozed);
   }
 
+  // Folder icons: tag the Snoozed / Scheduled folders (names come from
+  // config via env) so mail_scheduler.css can give them their icons, in
+  // the folder list and in the "Move to" folder selector.
+  function folderClasses() {
+    var map = {};
+    if (rcmail.env.scheduler_snooze_folder) {
+      map[rcmail.env.scheduler_snooze_folder] = 'scheduler-snoozed';
+    }
+    if (rcmail.env.scheduler_scheduled_folder) {
+      map[rcmail.env.scheduler_scheduled_folder] = 'scheduler-scheduled';
+    }
+    return map;
+  }
+
+  function markFolders() {
+    var map = folderClasses();
+    Object.keys(map).forEach(function(name) {
+      var li = rcmail.get_folder_li(name, '', true);
+      if (li) {
+        li.classList.add(map[name]);
+      }
+    });
+  }
+
+  rcmail.addEventListener('menu-open', function(p) {
+    if (p.name !== 'folder-selector') {
+      return;
+    }
+    var map = folderClasses();
+    $('a', p.obj).each(function() {
+      var cls = map[$(this).data('id')];
+      if (cls) {
+        $(this).parent().addClass(cls);
+      }
+    });
+  });
+
   rcmail.addEventListener('init', function() {
+    markFolders();
     if (rcmail.message_list) {
       rcmail.message_list.addEventListener('select', toggleButtons);
     }

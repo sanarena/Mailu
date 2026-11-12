@@ -10,3 +10,34 @@
 .scheduler-dialog .list-group-item .text-muted {
   white-space: nowrap;
 }
+
+/* Toolbar icons. Elastic draws every toolbar/menu icon from
+   ".menu a.<class>:before" (Font Awesome 5 solid in its "Icons" font);
+   without these the buttons show only a blank placeholder. */
+.menu a.scheduler-snooze:before,
+.menu a.scheduler-unsnooze:before,
+.menu a.scheduler-sendlater:before {
+  font-weight: 400; /* outline glyphs: the solid bells look heavier than Elastic's icons */
+}
+
+.menu a.scheduler-snooze:before {
+  content: "\f1f6"; /* bell-slash */
+}
+
+.menu a.scheduler-unsnooze:before {
+  content: "\f0f3"; /* bell */
+}
+
+.menu a.scheduler-sendlater:before {
+  content: "\f017"; /* clock */
+}
+
+/* Folder icons (classes set by mail_scheduler.js from the configured
+   folder names), same pattern as Elastic's ".folderlist li.archive". */
+.folderlist li.scheduler-snoozed > a:before {
+  content: "\f1f6";
+}
+
+.folderlist li.scheduler-scheduled > a:before {
+  content: "\f017";
+}

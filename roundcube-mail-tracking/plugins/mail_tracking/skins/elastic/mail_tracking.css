@@ -1,4 +1,16 @@
 /* mail_tracking: badges + task page. Native Elastic look. */
+
+/* Task button icon: rail (#taskmenu) and the hellomail account menu.
+   Elastic draws menu icons from ".menu a.<class>:before" (Font Awesome
+   5 solid in its "Icons" font); without this the slot stays blank. */
+#taskmenu a.tracking:before,
+#hm-account-menu ul.menu a.tracking:before {
+  content: "\f201"; /* chart-line */
+}
+
+body.task-tracking #hm-account-menu ul.menu a.tracking {
+  font-weight: 600;
+}
 .tracking-badge {
   display: inline-block;
   white-space: nowrap;

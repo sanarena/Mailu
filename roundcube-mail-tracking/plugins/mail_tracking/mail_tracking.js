@@ -435,8 +435,41 @@
     }
   }
 
+  /* -- hellomail account menu --------------------------------------- */
+
+  // On wide screens the hellomail skin hides the task rail (where the
+  // Tracking button lives) and moves task switching into its account
+  // menu, which only lists core tasks. Add Tracking after Contacts. The
+  // menu is built by hellomail's own init listener, registered after
+  // ours (skin footer scripts load after plugin scripts), hence the
+  // deferral. Clicking delegates to the rail button, like hellomail does
+  // for its Theme/About items.
+  function addToAccountMenu() {
+    var menu = document.querySelector('#hm-account-menu ul.menu');
+    var rail = document.querySelector('#taskmenu a.tracking');
+    if (!menu || !rail || menu.querySelector('a.tracking')) {
+      return;
+    }
+    var li = document.createElement('li');
+    li.setAttribute('role', 'menuitem');
+    var a = document.createElement('a');
+    a.href = rail.getAttribute('href') || '#';
+    a.className = 'tracking active';
+    a.textContent = (rail.textContent || '').trim()
+      || rcmail.gettext('tracking', 'mail_tracking');
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      rail.click();
+    });
+    li.appendChild(a);
+    var contacts = menu.querySelector('a.contacts');
+    var after = contacts ? contacts.parentNode : null;
+    menu.insertBefore(li, after ? after.nextSibling : menu.firstChild);
+  }
+
   rcmail.addEventListener('init', function() {
     injectTrackToggle();
     bindTask();
+    setTimeout(addToAccountMenu, 0);
   });
 })();
