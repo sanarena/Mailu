@@ -25,3 +25,7 @@ qemu-arm-static
 .mcp.json
 .memory/
 .claude_code_search/
+
+# local / editor files
+.DS_Store
+.zcode/

@@ -12,8 +12,10 @@ stdlib-only Python except the two Roundcube plugins (PHP/JS).
 | MCP server (mail + admin + Gmail import, stdio/HTTP) | `mcp/` | server 0.4.0, 53 tools | `sanarena/mailu-mcp:20261004144051` | 77 ([README](mcp/README.md)) |
 | Mail tracker (milter + pixel/click + service API) | `tracker/` | 1.0.12 (service-only) | `sanarena/mailu-tracker:1.0.12` | 96 ([README](tracker/README.md)) |
 | Scheduler (send-later + snooze daemon) | `scheduler/` | 1.0.4 | `sanarena/mail-scheduler:1.0.4` | 25 ([README](scheduler/README.md)) |
-| Roundcube `mail_tracking` plugin | `roundcube-mail-tracking/` | plugin 1.0.7 | `sanarena/roundcube-tracking` (digest-pinned in Flux) | live E2E ([README](roundcube-mail-tracking/README.md)) |
-| Roundcube `mail_scheduler` plugin | `roundcube-mail-scheduler/` | plugin 1.0.6 | `sanarena/roundcube-scheduler` (digest-pinned in Flux) | live E2E ([README](roundcube-mail-scheduler/README.md)) |
+| Roundcube `mail_tracking` plugin | `roundcube-mail-tracking/` | plugin 1.0.8 | `sanarena/roundcube-tracking` (digest-pinned in Flux) | live E2E ([README](roundcube-mail-tracking/README.md)) |
+| Roundcube `mail_scheduler` plugin | `roundcube-mail-scheduler/` | plugin 1.0.7 | `sanarena/roundcube-scheduler` (digest-pinned in Flux) | live E2E ([README](roundcube-mail-scheduler/README.md)) |
+| Mail backup daemon | `backup/` | 1.0.0 | `sanarena/mail-backup` (digest-pinned in Flux) | 41 unit tests + Pi integration ([README](backup/README.md)) |
+| Roundcube `mail_backup` plugin | `roundcube-mail-backup/` | plugin 1.0.0 | `sanarena/roundcube-backup` (digest-pinned in Flux) | Pi integration ([README](roundcube-mail-backup/README.md)) |
 
 Total: 198 unit tests, all green (`python3 -m unittest discover -s
 <dir>/tests` per component, no live server needed). The Roundcube
@@ -44,17 +46,19 @@ auth; the MCP server talks to the public front over TLS
 ## Cluster topology (`mail` namespace)
 
 Deployments: `mail-mailu-*` (stock Mailu 2024.06.58: admin, dovecot,
-front, mariadb, oletools, postfix, redis, rspamd, webmail),
-`mail-tracker`, `mail-scheduler`, `mail-mcp`, `mail-tls-bridge`.
+front, mariadb, oletools, postfix, redis, rspamd; webmail pinned to
+2024.06.68 for PHP 8.3.36 / Roundcube 1.6.20, the only PHP component),
+`mail-tracker`, `mail-scheduler`, `mail-backup`, `mail-mcp`, `mail-tls-bridge`.
 Webmail gets the Roundcube plugins via initContainers
-(`install-hellomail`, `install-scheduler-plugin`, `install-tracking`)
+(`install-hellomail`, `install-scheduler-plugin`, `install-tracking`,
+`install-backup-plugin`)
 that copy from the digest-pinned package images; `hellomail` is an
 external package, not built from this repo.
 
 Ingresses: tracker pixel/click host (serves already-sent mail;
 dashboard retired), `mcp.arminnikdel.com` (MCP over HTTPS, TLS at
 ingress). PVCs: `mail-tracker-data`, `mail-scheduler-data`,
-`mail-mcp-state` (all single-replica + `Recreate`: RWO SQLite/state,
+`mail-backup-data`, `mail-mcp-state` (all single-replica + `Recreate`: RWO SQLite/state,
 never two writers).
 
 ## Deploy pipeline (source of truth: Flux repo)
@@ -87,6 +91,8 @@ change process runs through Flux, then mirror back here.
 | `tracker-secrets` | `hmac-secret` | tracker (link signatures) |
 | `tracker-api` | `api-secret` | tracker + webmail (`tracking-secret.key` file) |
 | `scheduler-api` | `api-secret` | scheduler + webmail (`scheduler-secret.key` file) |
+| `backup-api` | `api-secret` | mail-backup + webmail (`backup-secret.key` file) |
+| `backup-crypt` | `crypt-key` | mail-backup (Fernet key for stored target passwords) |
 | `mailu-creds` | `api-token` | MCP (admin API) |
 | `mcp-admin-token` | `token` | MCP (operator Bearer [REDACTED] |
 
