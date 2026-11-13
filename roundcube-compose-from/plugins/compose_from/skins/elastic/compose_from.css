@@ -1,0 +1,118 @@
+/* compose_from: combo box in place of the From <select>. */
+
+.input-group > .compose-from-combo {
+  position: relative;
+  flex: 1 1 auto;
+  width: 1%;  /* like Bootstrap's .input-group > .form-control */
+  min-width: 0;
+}
+
+.compose-from-combo > .form-control {
+  width: 100%;
+  padding-right: 2.25rem;
+}
+
+.input-group > .compose-from-combo:not(:last-child) > .form-control {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.compose-from-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  opacity: 0.7;
+  text-decoration: none !important;
+  cursor: pointer;
+}
+
+.compose-from-toggle:hover {
+  opacity: 1;
+}
+
+.compose-from-toggle:before {
+  font-family: 'Icons';
+  font-weight: 900;
+  content: "\f107"; /* angle-down */
+}
+
+.compose-from-list {
+  position: absolute;
+  z-index: 1050;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+  margin: 2px 0 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #ced4da;
+  border-radius: 0.25rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.compose-from-list li {
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compose-from-list li:hover,
+.compose-from-list li.active {
+  background: #e8edf3;
+}
+
+.compose-from-list li[aria-selected="true"] {
+  font-weight: 600;
+}
+
+.compose-from-hint {
+  font-size: 0.85em;
+  margin-top: 0.25rem;
+  min-height: 0;
+}
+
+.compose-from-hint:empty {
+  display: none;
+}
+
+.compose-from-hint.ok {
+  color: #2e7d32;
+}
+
+.compose-from-hint.bad {
+  color: #c62828;
+}
+
+.compose-from-hint.pending {
+  color: #6c757d;
+}
+
+html.dark-mode .compose-from-list {
+  background: #1e293b;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+html.dark-mode .compose-from-list li:hover,
+html.dark-mode .compose-from-list li.active {
+  background: #2b3a52;
+}
+
+html.dark-mode .compose-from-hint.ok {
+  color: #81c784;
+}
+
+html.dark-mode .compose-from-hint.bad {
+  color: #ef9a9a;
+}

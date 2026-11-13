@@ -16,6 +16,7 @@ stdlib-only Python except the two Roundcube plugins (PHP/JS).
 | Roundcube `mail_scheduler` plugin | `roundcube-mail-scheduler/` | plugin 1.0.7 | `sanarena/roundcube-scheduler` (digest-pinned in Flux) | live E2E ([README](roundcube-mail-scheduler/README.md)) |
 | Mail backup daemon | `backup/` | 1.0.0 | `sanarena/mail-backup` (digest-pinned in Flux) | 41 unit tests + Pi integration ([README](backup/README.md)) |
 | Roundcube `mail_backup` plugin | `roundcube-mail-backup/` | plugin 1.0.0 | `sanarena/roundcube-backup` (digest-pinned in Flux) | Pi integration ([README](roundcube-mail-backup/README.md)) |
+| Roundcube `compose_from` plugin | `roundcube-compose-from/` | plugin 1.0.0 | `sanarena/roundcube-compose-from` (digest-pinned in Flux) | Pi integration ([README](roundcube-compose-from/README.md)) |
 
 Total: 198 unit tests, all green (`python3 -m unittest discover -s
 <dir>/tests` per component, no live server needed). The Roundcube
@@ -51,7 +52,7 @@ front, mariadb, oletools, postfix, redis, rspamd; webmail pinned to
 `mail-tracker`, `mail-scheduler`, `mail-backup`, `mail-mcp`, `mail-tls-bridge`.
 Webmail gets the Roundcube plugins via initContainers
 (`install-hellomail`, `install-scheduler-plugin`, `install-tracking`,
-`install-backup-plugin`)
+`install-backup-plugin`, `install-compose-from`)
 that copy from the digest-pinned package images; `hellomail` is an
 external package, not built from this repo.
 
