@@ -88,6 +88,27 @@ def build_server(ctx=None) -> McpServer:
     def _send(args):
         return mail_mod.send_email(m, **args)
 
+    @server.tool("mail_draft", "Save an unsent email to the mailbox's Drafts folder for a person "
+                 "to review and send. Nothing is sent. For a reply pass in_reply_to (the original "
+                 "Message-ID) and references so it threads; replace_uid updates an earlier draft.",
+                 {"type": "object", "required": ["to", "subject"],
+                  "properties": {
+                      "to": {"type": "array", "items": {"type": "string"}},
+                      "subject": {"type": "string"},
+                      "body_text": {"type": "string"}, "body_html": {"type": "string"},
+                      "from_addr": {"type": "string"},
+                      "cc": {"type": "array", "items": {"type": "string"}},
+                      "bcc": {"type": "array", "items": {"type": "string"}},
+                      "reply_to": {"type": "string"},
+                      "in_reply_to": {"type": "string"}, "references": {"type": "string"},
+                      "extra_headers": {"type": "object"},
+                      "attachments": {"type": "array", "items": {"type": "object"}},
+                      "priority": {"type": "string", "enum": ["high", "normal", "low"]},
+                      "replace_uid": {"type": "integer",
+                                      "description": "UID of an earlier draft (in Drafts) to replace"}}})
+    def _draft(args):
+        return mail_mod.save_draft(m, **args)
+
     @server.tool("mail_mailboxes", "List IMAP mailboxes.",
                  {"type": "object", "properties": {}})
     def _boxes(args):

@@ -47,7 +47,7 @@ class CombinedTests(unittest.TestCase):
         mail = [n for n in names if n.startswith("mail_")]
         admin = [n for n in names if n.startswith("admin_")]
         gmail = [n for n in names if n.startswith("gmail_")]
-        self.assertEqual((len(mail), len(admin), len(gmail)), (7, 43, 3))
+        self.assertEqual((len(mail), len(admin), len(gmail)), (8, 43, 3))
         for t in tools:  # every tool carries a usable schema + description
             self.assertTrue(t["description"])
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -70,7 +70,7 @@ class CombinedTests(unittest.TestCase):
         self.assertEqual(len(resps), 4)
         for r in resps[:3]:
             self.assertTrue(r["result"]["isError"], r)
-        self.assertEqual(len(resps[3]["result"]["tools"]), 53)
+        self.assertEqual(len(resps[3]["result"]["tools"]), 54)
 
 
 if __name__ == "__main__":

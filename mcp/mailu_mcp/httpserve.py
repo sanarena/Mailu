@@ -41,6 +41,12 @@ from .protocol import McpServer, RequestContext
 
 USER_TOOL_PREFIXES = ("mail_", "gmail_")
 
+# POST /mcp/drafts: the same server minus anything that sends or destroys
+# mail. Meant for AI agents that may only prepare drafts for a human
+# (they read, search, flag, move and save drafts; a person sends).
+DRAFTS_PATH = "/mcp/drafts"
+DRAFTS_DENIED_TOOLS = frozenset({"mail_send", "mail_delete"})
+
 
 def parse_auth(authorization: Optional[str], admin_token: str
                ) -> Tuple[str, Optional[Dict[str, str]]]:
@@ -182,9 +188,11 @@ def make_handler(server_factory, admin_token: str, max_body: int,
                 self._rpc_error(404, -32000, "Not found")
 
         def do_POST(self):
-            if self.path.split("?", 1)[0] != "/mcp":
+            path = self.path.split("?", 1)[0]
+            if path not in ("/mcp", DRAFTS_PATH):
                 self._rpc_error(404, -32000, "Not found")
                 return
+            denied = DRAFTS_DENIED_TOOLS if path == DRAFTS_PATH else frozenset()
             ip = self._client_ip()
             if limiter.blocked(ip):
                 self._rpc_error(429, -32003, "Too many failed attempts; slow down",
@@ -235,6 +243,14 @@ def make_handler(server_factory, admin_token: str, max_body: int,
                         return
             else:
                 server = server_factory(RequestContext(role="admin"))
+            if denied and method == "tools/call" and isinstance(params, dict) \
+                    and params.get("name", "") in denied:
+                # not a credential problem: no rate-limit strike
+                self._rpc_error(403, -32002,
+                                f"Tool {params.get('name')!r} is not available on {DRAFTS_PATH}: "
+                                "this endpoint only prepares drafts (use mail_draft; a person sends)",
+                                msg_id=msg.get("id"))
+                return
             try:
                 resp = server.handle(msg)
             except Exception as exc:
@@ -246,10 +262,13 @@ def make_handler(server_factory, admin_token: str, max_body: int,
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if method == "tools/list" and role == "user":
-                tools = resp.get("result", {}).get("tools", [])
-                resp["result"]["tools"] = [t for t in tools
-                                           if t.get("name", "").startswith(USER_TOOL_PREFIXES)]
+            if method == "tools/list" and isinstance(resp.get("result"), dict):
+                tools = resp["result"].get("tools", [])
+                if role == "user":
+                    tools = [t for t in tools if t.get("name", "").startswith(USER_TOOL_PREFIXES)]
+                if denied:
+                    tools = [t for t in tools if t.get("name", "") not in denied]
+                resp["result"]["tools"] = tools
             self._send_json(200, resp)
 
     return McpHttpHandler

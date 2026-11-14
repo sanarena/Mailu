@@ -273,20 +273,50 @@ def list_mailboxes(cfg: MailConfig) -> List[str]:
         return [name for name, _ in _parse_list(data)]
 
 
-def find_sent_mailbox(conn) -> Optional[str]:
-    """The Sent folder: the \\Sent special-use mailbox, else a common name."""
+DRAFTS_FALLBACK_NAMES = ("drafts", "draft", "inbox.drafts", "inbox/drafts")
+
+
+def _find_special(conn, flag: str, fallbacks) -> Optional[str]:
+    """A special-use mailbox (e.g. \\Sent, \\Drafts), else a common name."""
     typ, data = conn.list()
     if typ != "OK":
         return None
     boxes = _parse_list(data)
     for name, flags in boxes:
-        if "\\sent" in flags:
+        if flag in flags:
             return name
     by_lower = {name.lower(): name for name, _ in boxes}
-    for candidate in SENT_FALLBACK_NAMES:
+    for candidate in fallbacks:
         if candidate in by_lower:
             return by_lower[candidate]
     return None
+
+
+def find_sent_mailbox(conn) -> Optional[str]:
+    """The Sent folder: the \\Sent special-use mailbox, else a common name."""
+    return _find_special(conn, "\\sent", SENT_FALLBACK_NAMES)
+
+
+def find_drafts_mailbox(conn) -> Optional[str]:
+    """The Drafts folder: the \\Drafts special-use mailbox, else a common name."""
+    return _find_special(conn, "\\drafts", DRAFTS_FALLBACK_NAMES)
+
+
+def _resp_text(resp) -> bytes:
+    return b" ".join(r for r in (resp or []) if isinstance(r, bytes))
+
+
+def _append(conn, box: str, flags: str, raw: bytes):
+    """APPEND, creating the folder once on TRYCREATE. Returns the response."""
+    date = imaplib.Time2Internaldate(time.time())
+    typ, resp = conn.append(_quote_mailbox(box), flags, date, raw)
+    if typ != "OK" and b"TRYCREATE" in _resp_text(resp).upper():
+        conn.create(_quote_mailbox(box))
+        typ, resp = conn.append(_quote_mailbox(box), flags, date, raw)
+    if typ != "OK":
+        raise RuntimeError(f"APPEND to {box} refused: "
+                           f"{_resp_text(resp).decode('utf-8', 'replace')[:160]}")
+    return resp
 
 
 def save_sent_copy(cfg: MailConfig, raw: bytes) -> str:
@@ -294,15 +324,7 @@ def save_sent_copy(cfg: MailConfig, raw: bytes) -> str:
     Creates "Sent" when the server has none (TRYCREATE)."""
     with connect_imap(cfg) as conn:
         box = find_sent_mailbox(conn) or "Sent"
-        date = imaplib.Time2Internaldate(time.time())
-        typ, resp = conn.append(_quote_mailbox(box), "(\\Seen)", date, raw)
-        if typ != "OK" and b"TRYCREATE" in b" ".join(
-                r for r in (resp or []) if isinstance(r, bytes)).upper():
-            conn.create(_quote_mailbox(box))
-            typ, resp = conn.append(_quote_mailbox(box), "(\\Seen)", date, raw)
-        if typ != "OK":
-            detail = b" ".join(r for r in (resp or []) if isinstance(r, bytes))
-            raise RuntimeError(f"APPEND to {box} refused: {detail.decode('utf-8', 'replace')[:160]}")
+        _append(conn, box, "(\\Seen)", raw)
         return box
 
 
@@ -341,7 +363,7 @@ def append_message(cfg: MailConfig, mailbox: str, raw: bytes, flags: str = "(\\S
         return typ == "OK"
 
 
-def send_email(
+def _build_message(
     cfg: MailConfig,
     to: List[str],
     subject: str,
@@ -356,8 +378,9 @@ def send_email(
     extra_headers: Optional[Dict[str, str]] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
     priority: Optional[str] = None,
-    save_sent: Optional[bool] = None,
-) -> Dict[str, Any]:
+):
+    """The outgoing message, shared by mail_send and mail_draft.
+    Returns (msg, sender, to, cc, bcc); Bcc is never a header here."""
     sender = from_addr or cfg.default_from or cfg.smtp_user
     if not sender:
         raise ValueError("No sender: pass from_addr or set MAILU_DEFAULT_FROM/MAILU_SMTP_USER")
@@ -407,6 +430,30 @@ def send_email(
         msg.add_attachment(data, maintype=att.get("maintype", "application"),
                            subtype=att.get("subtype", "octet-stream"),
                            filename=att.get("filename", "attachment"))
+    return msg, sender, list(to), list(cc or []), list(bcc or [])
+
+
+def send_email(
+    cfg: MailConfig,
+    to: List[str],
+    subject: str,
+    body_text: str = "",
+    body_html: Optional[str] = None,
+    from_addr: Optional[str] = None,
+    cc: Optional[List[str]] = None,
+    bcc: Optional[List[str]] = None,
+    reply_to: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+    priority: Optional[str] = None,
+    save_sent: Optional[bool] = None,
+) -> Dict[str, Any]:
+    msg, sender, to, cc, bcc = _build_message(
+        cfg, to, subject, body_text=body_text, body_html=body_html, from_addr=from_addr,
+        cc=cc, bcc=bcc, reply_to=reply_to, in_reply_to=in_reply_to, references=references,
+        extra_headers=extra_headers, attachments=attachments, priority=priority)
     recipients = list(to) + list(cc or []) + list(bcc or [])
     implicit_tls = cfg.smtp_port == 465  # smtps: TLS from the first byte
     if implicit_tls:
@@ -440,4 +487,55 @@ def send_email(
         except Exception as exc:
             result["saved_to_sent"] = None
             result["sent_copy_error"] = f"{type(exc).__name__}: {exc}"[:240]
+    return result
+
+
+def save_draft(
+    cfg: MailConfig,
+    to: List[str],
+    subject: str,
+    body_text: str = "",
+    body_html: Optional[str] = None,
+    from_addr: Optional[str] = None,
+    cc: Optional[List[str]] = None,
+    bcc: Optional[List[str]] = None,
+    reply_to: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+    priority: Optional[str] = None,
+    replace_uid: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Save an unsent message to the Drafts folder (nothing is sent).
+
+    The draft keeps Bcc (a mail client sends it from there), In-Reply-To and
+    References (threading). replace_uid removes that older draft from Drafts
+    after the new one is stored, so a draft can be revised in place."""
+    if not cfg.imap_user:
+        raise ValueError("Saving a draft needs a mailbox login (HTTP Basic auth)")
+    msg, sender, to, cc, bcc = _build_message(
+        cfg, to, subject, body_text=body_text, body_html=body_html, from_addr=from_addr,
+        cc=cc, bcc=bcc, reply_to=reply_to, in_reply_to=in_reply_to, references=references,
+        extra_headers=extra_headers, attachments=attachments, priority=priority)
+    if bcc:
+        msg["Bcc"] = ", ".join(bcc)
+    raw = msg.as_bytes(policy=policy.SMTP)
+    with connect_imap(cfg) as conn:
+        box = find_drafts_mailbox(conn) or "Drafts"
+        resp = _append(conn, box, "(\\Draft \\Seen)", raw)
+        m = re.search(rb"APPENDUID \d+ (\d+)", _resp_text(resp))
+        result: Dict[str, Any] = {"saved_to": box, "uid": int(m.group(1)) if m else None,
+                                  "message_id": str(msg["Message-ID"] or ""), "from": sender,
+                                  "to": ", ".join(to + cc), "sent": False}
+        if replace_uid:
+            conn.select(_quote_mailbox(box))
+            typ, _ = conn.uid("store", str(int(replace_uid)), "+FLAGS", "(\\Deleted)")
+            if typ == "OK":
+                caps = getattr(conn, "capabilities", ()) or ()
+                if "UIDPLUS" in caps:
+                    conn.uid("expunge", str(int(replace_uid)))
+                else:
+                    conn.expunge()
+            result["replaced_uid"] = int(replace_uid) if typ == "OK" else None
     return result

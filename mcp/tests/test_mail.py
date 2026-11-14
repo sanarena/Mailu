@@ -209,6 +209,81 @@ class SentCopyTests(unittest.TestCase):
         self.assertIn("save_sent", props)
 
 
+class DraftIMAP(DovecotIMAP):
+    capabilities = ("IMAP4REV1", "UIDPLUS")
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.expunged = []
+
+    def list(self):
+        return ("OK", [b'(\\HasNoChildren \\Drafts) "." Drafts',
+                       b'(\\HasNoChildren \\Sent) "." Sent',
+                       b'(\\HasNoChildren) "." INBOX'])
+
+    def append(self, box, flags, date, raw):
+        self.appended = (box, flags, date, raw)
+        return ("OK", [b"[APPENDUID 1701 42] Append completed."])
+
+    def uid(self, cmd, *args):
+        self.uid_calls.append((cmd, args))
+        if cmd == "expunge":
+            self.expunged.append(args[0])
+        return ("OK", [b"ok"])
+
+
+class DraftTests(unittest.TestCase):
+    def setUp(self):
+        DovecotIMAP.instances = []
+        self.cfg = MailConfig(imap_user="sales@hitsteps.test", imap_password="p",
+                              smtp_host="h", smtp_port=465, smtp_user="sales@hitsteps.test",
+                              smtp_password="p", default_from="sales@hitsteps.test")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DraftIMAP)
+    def test_draft_saved_to_drafts_never_sent(self):
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP_SSL") as ssl, \
+             patch("mcp.mailu_mcp.mail.smtplib.SMTP") as plain:
+            out = mail_mod.save_draft(self.cfg, to=["customer@x.io"], bcc=["armin@x.io"],
+                                      subject="Re: Pricing", body_text="Thanks!",
+                                      in_reply_to="<orig@x.io>", references="<orig@x.io>")
+        ssl.assert_not_called()
+        plain.assert_not_called()
+        self.assertEqual(out["saved_to"], "Drafts")
+        self.assertEqual(out["uid"], 42)
+        self.assertFalse(out["sent"])
+        self.assertEqual(out["from"], "sales@hitsteps.test")
+        box, flags, date, raw = DovecotIMAP.instances[-1].appended
+        self.assertEqual(box, '"Drafts"')
+        self.assertEqual(flags, "(\\Draft \\Seen)")
+        for needle in (b"From: sales@hitsteps.test", b"To: customer@x.io", b"Bcc: armin@x.io",
+                       b"Subject: Re: Pricing", b"In-Reply-To: <orig@x.io>", b"References: <orig@x.io>"):
+            self.assertIn(needle, raw)
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DraftIMAP)
+    def test_replace_uid_removes_old_draft(self):
+        out = mail_mod.save_draft(self.cfg, to=["c@x.io"], subject="v2", replace_uid=41)
+        conn = DovecotIMAP.instances[-1]
+        self.assertIn(("store", ("41", "+FLAGS", "(\\Deleted)")), conn.uid_calls)
+        self.assertEqual(conn.expunged, ["41"])  # UID EXPUNGE: only that draft
+        self.assertEqual(out["replaced_uid"], 41)
+
+    def test_draft_needs_mailbox_login(self):
+        cfg = MailConfig(default_from="x@x.io")
+        with self.assertRaises(ValueError):
+            mail_mod.save_draft(cfg, to=["c@x.io"], subject="s")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", FakeIMAP)
+    def test_drafts_fallback_name_created(self):
+        # no \Drafts and no Drafts folder at all: falls back to "Drafts"
+        out = mail_mod.save_draft(self.cfg, to=["c@x.io"], subject="s")
+        self.assertEqual(out["saved_to"], "Drafts")
+        self.assertEqual(FakeIMAP.last.appended[0], '"Drafts"')
+        self.assertIsNone(out["uid"])
+
+    def test_tool_registered(self):
+        self.assertIn("mail_draft", build_server().tools)
+
+
 class MailTests(unittest.TestCase):
     def test_search_criteria_builder(self):
         c = mail_mod.build_search_criteria(unseen_only=True, from_="a@x.io",

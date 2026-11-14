@@ -67,6 +67,7 @@ job_name: "weekly-catchup", dry_run: true}` first, then re-run with
 | `mail_search` | Search a mailbox: `mailbox`, `limit`, `unseen_only`, `seen`, `flagged`, `since`/`before` (`01-Jan-2025`), `from_`/`to`/`cc`/`subject`/`body`/`text`, `header`+`header_value`, `uids`, `larger`/`smaller` |
 | `mail_read` | Full message: `mailbox`, `uid`, `mark_seen`, `include_body`, `max_bytes` → headers, `body_text`/`body_html`, attachments |
 | `mail_send` | Send via SMTP: `to`, `subject`, `body_text`, `body_html`, `from_addr`, `cc`, `bcc`, `reply_to`, `in_reply_to`, `references`, `extra_headers`, `attachments` (`filename`, base64 `content`, `maintype`/`subtype`), `priority`, `save_sent` (default true: the message, with Bcc, is appended read to the `\Sent` folder; result `saved_to_sent`; a failed copy never fails the send; `MAILU_SAVE_SENT=false` changes the default) |
+| `mail_draft` | Save an unsent message to the `\Drafts` folder for a person to review and send (same fields as `mail_send`, plus `replace_uid` to revise an earlier draft; keeps Bcc, In-Reply-To/References; returns `saved_to`, `uid`, `sent: false`) |
 | `mail_mailboxes` | List IMAP mailboxes |
 | `mail_flag` / `mail_move` / `mail_delete` | Flag, move, delete messages |
 
@@ -113,6 +114,13 @@ curl -s -H "Authorization: Bearer $MCP_HTTP_ADMIN_TOKEN" \
   http://127.0.0.1:8000/mcp              # all 53 tools
 ```
 
+**Drafts-only endpoint for AI agents:** `POST /mcp/drafts` serves the same
+tools minus `mail_send` and `mail_delete` (hidden from `tools/list`, refused
+with 403 on `tools/call`, for users and operator alike, without counting as a
+failed login). Point agents that must never send mail at this URL; they
+read, search, flag, move and `mail_draft`, and a person sends from webmail or
+a mail app.
+
 Rules: one JSON-RPC message per `POST /mcp` (same shapes as stdio);
 `GET /healthz` is the only unauthenticated route; the server refuses to
 start without `MCP_HTTP_ADMIN_TOKEN` (constant-time compare, 401/403);
@@ -131,7 +139,7 @@ repo `mailu/mcp-*.yaml`, which is the deploy source of truth.
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 86 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 96 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 7 mail + 43 admin + 3 gmail tools
+  | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 8 mail + 43 admin + 3 gmail tools
 ```

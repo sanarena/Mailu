@@ -435,3 +435,64 @@ class GmailIdentityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def drafts_demo_server(ctx=None) -> McpServer:
+    srv = McpServer("demo", "9.9")
+    for name in ("mail_search", "mail_draft", "mail_send", "mail_delete", "admin_users_list"):
+        srv.tool(name, "demo", {"type": "object"})(lambda args, n=name: {"tool": n})
+    return srv
+
+
+class DraftsEndpointTests(ServedCase):
+    def setUp(self):
+        handler = httpserve.make_handler(drafts_demo_server, TOKEN, 1024,
+                                         rate_limiter=httpserve.RateLimiter(max_failures=2))
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd.daemon_threads = True
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def _call(self, path, auth, method, params=None):
+        return self._post(path, {"jsonrpc": "2.0", "id": 1, "method": method,
+                                 "params": params or {}}, auth=auth)
+
+    def _names(self, path, auth):
+        status, body = self._call(path, auth, "tools/list")
+        self.assertEqual(status, 200)
+        return [t["name"] for t in json.loads(body)["result"]["tools"]]
+
+    def test_drafts_list_hides_send_and_delete(self):
+        user = basic("a@x.io", "pw")
+        self.assertEqual(self._names("/mcp/drafts", user), ["mail_search", "mail_draft"])
+        self.assertEqual(self._names("/mcp", user),
+                         ["mail_search", "mail_draft", "mail_send", "mail_delete"])
+        self.assertNotIn("mail_send", self._names("/mcp/drafts", f"Bearer {TOKEN}"))
+
+    def test_drafts_refuses_send_and_delete_for_everyone(self):
+        for auth in (basic("a@x.io", "pw"), f"Bearer {TOKEN}"):
+            for tool in ("mail_send", "mail_delete"):
+                status, body = self._call("/mcp/drafts", auth, "tools/call",
+                                          {"name": tool, "arguments": {}})
+                self.assertEqual(status, 403, (auth[:6], tool))
+                self.assertIn("mail_draft", json.loads(body)["error"]["message"])
+
+    def test_drafts_allows_reading_and_drafting(self):
+        for tool in ("mail_search", "mail_draft"):
+            status, body = self._call("/mcp/drafts", basic("a@x.io", "pw"), "tools/call",
+                                      {"name": tool, "arguments": {}})
+            self.assertEqual(status, 200, tool)
+
+    def test_refusals_are_not_rate_limit_strikes(self):
+        # limiter allows 2 failures; 5 refused sends must not lock the agent out
+        for _ in range(5):
+            self._call("/mcp/drafts", basic("a@x.io", "pw"), "tools/call",
+                       {"name": "mail_send", "arguments": {}})
+        status, _ = self._call("/mcp/drafts", basic("a@x.io", "pw"), "tools/list")
+        self.assertEqual(status, 200)
+
+    def test_send_still_works_on_main_endpoint(self):
+        status, _ = self._call("/mcp", basic("a@x.io", "pw"), "tools/call",
+                               {"name": "mail_send", "arguments": {}})
+        self.assertEqual(status, 200)

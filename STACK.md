@@ -100,7 +100,7 @@ change process runs through Flux, then mirror back here.
 ## QA and operations
 
 ```bash
-python3 -m unittest discover -s mcp/tests        # 86 tests
+python3 -m unittest discover -s mcp/tests        # 96 tests
 python3 -m unittest discover -s tracker/tests    # 96 tests
 python3 -m unittest discover -s scheduler/tests  # 25 tests
 kubectl -n mail exec deploy/mail-mcp -- python3 -c \
