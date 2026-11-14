@@ -86,6 +86,19 @@ What gets copied:
   to one call every 3 s per user.
 - `POST /v1/run` `{user}` → queues an immediate run.
 
+## Setting targets from the command line
+
+`tools/set-backup-target.sh <imap-host> <imap-username> <mailbox>...`
+sets the same target for many mailboxes at once:
+
+- It asks for the target password in your terminal (hidden) and pipes
+  it to the service through `kubectl exec`.
+- It runs one connection test first. If that fails, nothing is saved.
+- It then saves the target for each mailbox, with prefix
+  `Backup/<mailbox>`.
+
+The password never touches a file, a command line or the output.
+
 ## Build and deploy (arm64, Pi build host)
 
 ```bash
