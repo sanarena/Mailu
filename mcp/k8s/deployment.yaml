@@ -25,7 +25,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mcp
-          image: sanarena/mailu-mcp:20261004144051
+          image: sanarena/mailu-mcp:20261114092617@sha256:f976b7be9ebfab957ee6571be5154459fba4f1d0c2fa6e9403f20c5583de4b21
           imagePullPolicy: IfNotPresent
           args: ["--http", "--host", "0.0.0.0", "--port", "8000"]
           ports:

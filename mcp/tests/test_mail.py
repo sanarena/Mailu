@@ -78,6 +78,137 @@ class FakeIMAP:
         return ("OK", [b"ok"])
 
 
+class DovecotIMAP(FakeIMAP):
+    """LIST the way Mailu's Dovecot answers: unquoted names, special-use."""
+    append_result = ("OK", [b"ok"])
+    instances = []
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        DovecotIMAP.instances.append(self)
+        self.created = []
+
+    def list(self):
+        return ("OK", [b'(\\HasNoChildren \\Archive) "." Archive',
+                       b'(\\HasNoChildren \\Sent) "." Sent',
+                       b'(\\HasNoChildren) "." "Old Stuff"',
+                       (b'(\\HasNoChildren) "." {9}', b'Odd"Name'), b'',
+                       b'(\\HasNoChildren) "." INBOX'])
+
+    def append(self, box, flags, date, raw):
+        self.appended = (box, flags, date, raw)
+        return DovecotIMAP.append_result
+
+    def create(self, box):
+        self.created.append(box)
+        return ("OK", [b"created"])
+
+
+def _smtp_fake():
+    fake = MagicMock()
+    fake.__enter__ = MagicMock(return_value=fake)
+    fake.__exit__ = MagicMock(return_value=False)
+    return fake
+
+
+class SentCopyTests(unittest.TestCase):
+    def setUp(self):
+        DovecotIMAP.instances = []
+        DovecotIMAP.append_result = ("OK", [b"ok"])
+        self.cfg = MailConfig(imap_user="me@mailu.test", imap_password="p",
+                              smtp_host="h", smtp_port=587, smtp_user="me@mailu.test",
+                              smtp_password="p", default_from="me@mailu.test")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DovecotIMAP)
+    def test_list_mailboxes_unquoted_dovecot_names(self):
+        self.assertEqual(mail_mod.list_mailboxes(self.cfg),
+                         ["Archive", "Sent", "Old Stuff", 'Odd"Name', "INBOX"])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DovecotIMAP)
+    def test_send_saves_copy_to_sent_with_bcc(self):
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake):
+            out = mail_mod.send_email(self.cfg, to=["a@x.io"], bcc=["hidden@x.io"],
+                                      subject="Quarterly", body_text="numbers")
+        self.assertEqual(out["saved_to_sent"], "Sent")
+        box, flags, date, raw = DovecotIMAP.instances[-1].appended
+        self.assertEqual(box, '"Sent"')
+        self.assertEqual(flags, "(\\Seen)")
+        self.assertTrue(date.startswith('"'))
+        self.assertIn(b"Subject: Quarterly", raw)
+        self.assertIn(b"Bcc: hidden@x.io", raw)          # sender's copy keeps Bcc
+        self.assertIn(b"\r\n", raw)                       # CRLF for APPEND
+        sent_msg = fake.send_message.call_args[0][0]
+        self.assertIsNone(sent_msg["Bcc"])                # recipients never see it
+        self.assertIn("hidden@x.io", fake.send_message.call_args[1]["to_addrs"])
+
+    def test_save_sent_false_skips_imap(self):
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake), \
+             patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL") as imap:
+            out = mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s", save_sent=False)
+        imap.assert_not_called()
+        self.assertIsNone(out["saved_to_sent"])
+
+    def test_config_default_off_respected(self):
+        self.cfg.save_sent = False
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake), \
+             patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL") as imap:
+            mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s")
+            imap.assert_not_called()
+            mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s", save_sent=True)
+            imap.assert_called_once()
+
+    def test_no_mailbox_login_skips(self):
+        cfg = MailConfig(smtp_host="h", smtp_port=587, default_from="me@x.io")
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake), \
+             patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL") as imap:
+            out = mail_mod.send_email(cfg, to=["a@x.io"], subject="s")
+        imap.assert_not_called()
+        self.assertIsNone(out["saved_to_sent"])
+        self.assertIn("skipped", out["sent_copy"])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DovecotIMAP)
+    def test_copy_failure_does_not_fail_send(self):
+        DovecotIMAP.append_result = ("NO", [b"[OVERQUOTA] Quota exceeded"])
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake):
+            out = mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s")
+        fake.send_message.assert_called_once()
+        self.assertIsNone(out["saved_to_sent"])
+        self.assertIn("OVERQUOTA", out["sent_copy_error"])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", DovecotIMAP)
+    def test_trycreate_creates_folder_and_retries(self):
+        results = [("NO", [b"[TRYCREATE] Mailbox doesn't exist"]), ("OK", [b"ok"])]
+
+        def append(self, box, flags, date, raw):
+            self.appended = (box, flags, date, raw)
+            return results.pop(0)
+
+        with patch.object(DovecotIMAP, "append", append):
+            fake = _smtp_fake()
+            with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake):
+                out = mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s")
+        self.assertEqual(out["saved_to_sent"], "Sent")
+        self.assertEqual(DovecotIMAP.instances[-1].created, ['"Sent"'])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", FakeIMAP)
+    def test_sent_fallback_by_name(self):
+        # no \Sent flag: falls back to a well-known name (INBOX.Sent here)
+        fake = _smtp_fake()
+        with patch("mcp.mailu_mcp.mail.smtplib.SMTP", return_value=fake):
+            out = mail_mod.send_email(self.cfg, to=["a@x.io"], subject="s")
+        self.assertEqual(out["saved_to_sent"], "INBOX.Sent")
+
+    def test_tool_schema_has_save_sent(self):
+        tool = build_server().tools["mail_send"]
+        props = tool.input_schema["properties"] if hasattr(tool, "input_schema") else tool.schema["properties"]
+        self.assertIn("save_sent", props)
+
+
 class MailTests(unittest.TestCase):
     def test_search_criteria_builder(self):
         c = mail_mod.build_search_criteria(unseen_only=True, from_="a@x.io",

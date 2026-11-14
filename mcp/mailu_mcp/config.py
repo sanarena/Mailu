@@ -27,6 +27,7 @@ class MailConfig:
     smtp_starttls: bool = True
     default_from: str = ""
     timeout: int = 60
+    save_sent: bool = True  # mail_send keeps a copy in the Sent folder
 
 
 @dataclass
@@ -75,6 +76,7 @@ class AppConfig:
             smtp_starttls=os.getenv("MAILU_SMTP_STARTTLS", "true").lower() not in ("0", "false", "no"),
             default_from=os.getenv("MAILU_DEFAULT_FROM", os.getenv("MAILU_IMAP_USER", "")),
             timeout=_int("MAILU_TIMEOUT", 60),
+            save_sent=os.getenv("MAILU_SAVE_SENT", "true").lower() not in ("0", "false", "no"),
         )
         admin = AdminConfig(
             base_url=os.getenv("MAILU_API_BASE", "https://localhost/api").rstrip("/"),

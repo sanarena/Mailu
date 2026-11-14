@@ -1,7 +1,9 @@
 """IMAP search/read + SMTP send for Mailu mailboxes (stdlib only)."""
+import copy
 import imaplib
 import re
 import smtplib
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from email import policy
@@ -232,21 +234,76 @@ def get_email(cfg: MailConfig, mailbox: str, uid: int, mark_seen: bool = False,
         return _message_to_dict(uid, raw, include_body, max_bytes)
 
 
+_LIST_RE = re.compile(r'^\((?P<flags>[^)]*)\)\s+(?P<delim>"(?:[^"\\]|\\.)*"|NIL)\s*(?P<name>.*)$')
+
+SENT_FALLBACK_NAMES = ("sent", "sent items", "sent messages", "inbox.sent", "inbox/sent")
+
+
+def _parse_list(data: List[Any]) -> List[Any]:
+    """[(name, lowercase_flags)] from an imaplib LIST reply. Handles quoted
+    names ("Sent Items"), unquoted ones (Dovecot answers `"." Sent`) and
+    names sent as literals (imaplib gives a (line, name) tuple)."""
+    out = []
+    for entry in data or []:
+        literal = None
+        if isinstance(entry, tuple):
+            entry, literal = entry[0], entry[1]
+        if not entry:
+            continue
+        text = entry.decode("utf-8", "replace") if isinstance(entry, bytes) else str(entry)
+        m = _LIST_RE.match(text.strip())
+        if not m:
+            continue
+        if literal is not None:
+            name = literal.decode("utf-8", "replace") if isinstance(literal, bytes) else str(literal)
+        else:
+            name = m.group("name").strip()
+            if len(name) >= 2 and name[0] == name[-1] == '"':
+                name = re.sub(r'\\(.)', r'\1', name[1:-1])
+        if name:
+            out.append((name, {f.lower() for f in m.group("flags").split()}))
+    return out
+
+
 def list_mailboxes(cfg: MailConfig) -> List[str]:
     with connect_imap(cfg) as conn:
         typ, data = conn.list()
         if typ != "OK":
             raise RuntimeError(f"IMAP LIST failed: {typ}")
-        boxes = []
-        for entry in data or []:
-            try:
-                text = entry.decode("utf-8", "replace") if isinstance(entry, bytes) else str(entry)
-            except Exception:
-                continue
-            m = re.search(r'"([^"]+)"\s*$', text)  # any hierarchy delimiter
-            if m:
-                boxes.append(m.group(1))
-        return boxes
+        return [name for name, _ in _parse_list(data)]
+
+
+def find_sent_mailbox(conn) -> Optional[str]:
+    """The Sent folder: the \\Sent special-use mailbox, else a common name."""
+    typ, data = conn.list()
+    if typ != "OK":
+        return None
+    boxes = _parse_list(data)
+    for name, flags in boxes:
+        if "\\sent" in flags:
+            return name
+    by_lower = {name.lower(): name for name, _ in boxes}
+    for candidate in SENT_FALLBACK_NAMES:
+        if candidate in by_lower:
+            return by_lower[candidate]
+    return None
+
+
+def save_sent_copy(cfg: MailConfig, raw: bytes) -> str:
+    """APPEND a sent message (\\Seen) to the Sent folder; returns its name.
+    Creates "Sent" when the server has none (TRYCREATE)."""
+    with connect_imap(cfg) as conn:
+        box = find_sent_mailbox(conn) or "Sent"
+        date = imaplib.Time2Internaldate(time.time())
+        typ, resp = conn.append(_quote_mailbox(box), "(\\Seen)", date, raw)
+        if typ != "OK" and b"TRYCREATE" in b" ".join(
+                r for r in (resp or []) if isinstance(r, bytes)).upper():
+            conn.create(_quote_mailbox(box))
+            typ, resp = conn.append(_quote_mailbox(box), "(\\Seen)", date, raw)
+        if typ != "OK":
+            detail = b" ".join(r for r in (resp or []) if isinstance(r, bytes))
+            raise RuntimeError(f"APPEND to {box} refused: {detail.decode('utf-8', 'replace')[:160]}")
+        return box
 
 
 def set_flags(cfg: MailConfig, mailbox: str, uid: int, flags: List[str], mode: str = "add") -> bool:
@@ -299,7 +356,8 @@ def send_email(
     extra_headers: Optional[Dict[str, str]] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
     priority: Optional[str] = None,
-) -> Dict[str, str]:
+    save_sent: Optional[bool] = None,
+) -> Dict[str, Any]:
     sender = from_addr or cfg.default_from or cfg.smtp_user
     if not sender:
         raise ValueError("No sender: pass from_addr or set MAILU_DEFAULT_FROM/MAILU_SMTP_USER")
@@ -362,5 +420,24 @@ def send_email(
         if cfg.smtp_user:
             s.login(cfg.smtp_user, cfg.smtp_password)
         s.send_message(msg, from_addr=sender, to_addrs=recipients)
-    return {"message_id": str(msg["Message-ID"] or ""), "from": sender,
-            "to": ", ".join(recipients)}
+    result: Dict[str, Any] = {"message_id": str(msg["Message-ID"] or ""), "from": sender,
+                              "to": ", ".join(recipients)}
+
+    # Keep a copy in Sent, like a mail client does. Never fails the send:
+    # the message is already out, so problems are only reported.
+    want = cfg.save_sent if save_sent is None else bool(save_sent)
+    if not want:
+        result["saved_to_sent"] = None
+    elif not cfg.imap_user:
+        result["saved_to_sent"] = None
+        result["sent_copy"] = "skipped: this session has no mailbox login"
+    else:
+        stored = copy.deepcopy(msg)
+        if bcc:  # recipients see no Bcc; the sender's own copy keeps it
+            stored["Bcc"] = ", ".join(bcc)
+        try:
+            result["saved_to_sent"] = save_sent_copy(cfg, stored.as_bytes(policy=policy.SMTP))
+        except Exception as exc:
+            result["saved_to_sent"] = None
+            result["sent_copy_error"] = f"{type(exc).__name__}: {exc}"[:240]
+    return result

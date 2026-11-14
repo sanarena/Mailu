@@ -68,7 +68,8 @@ def build_server(ctx=None) -> McpServer:
                                   args.get("include_body", True),
                                   args.get("max_bytes", 200000))
 
-    @server.tool("mail_send", "Send an email via Mailu SMTP with all details/parameters.",
+    @server.tool("mail_send", "Send an email via Mailu SMTP with all details/parameters. "
+                 "A copy is saved to the mailbox's Sent folder unless save_sent is false.",
                  {"type": "object", "required": ["to", "subject"],
                   "properties": {
                       "to": {"type": "array", "items": {"type": "string"}},
@@ -81,7 +82,9 @@ def build_server(ctx=None) -> McpServer:
                       "in_reply_to": {"type": "string"}, "references": {"type": "string"},
                       "extra_headers": {"type": "object"},
                       "attachments": {"type": "array", "items": {"type": "object"}},
-                      "priority": {"type": "string", "enum": ["high", "normal", "low"]}}})
+                      "priority": {"type": "string", "enum": ["high", "normal", "low"]},
+                      "save_sent": {"type": "boolean", "default": True,
+                                    "description": "Also store the message (with Bcc) in the Sent folder"}}})
     def _send(args):
         return mail_mod.send_email(m, **args)
 

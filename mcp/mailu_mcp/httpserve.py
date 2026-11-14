@@ -124,7 +124,8 @@ def user_mail_config(identity: Dict[str, str]) -> MailConfig:
         imap_ssl=base.imap_ssl, smtp_host=base.smtp_host,
         smtp_port=base.smtp_port, smtp_user=identity["email"],
         smtp_password=identity["secret"], smtp_starttls=base.smtp_starttls,
-        default_from=identity["email"],
+        default_from=identity["email"], timeout=base.timeout,
+        save_sent=base.save_sent,
     )
 
 

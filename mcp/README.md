@@ -66,7 +66,7 @@ job_name: "weekly-catchup", dry_run: true}` first, then re-run with
 |---|---|
 | `mail_search` | Search a mailbox: `mailbox`, `limit`, `unseen_only`, `seen`, `flagged`, `since`/`before` (`01-Jan-2025`), `from_`/`to`/`cc`/`subject`/`body`/`text`, `header`+`header_value`, `uids`, `larger`/`smaller` |
 | `mail_read` | Full message: `mailbox`, `uid`, `mark_seen`, `include_body`, `max_bytes` → headers, `body_text`/`body_html`, attachments |
-| `mail_send` | Send via SMTP: `to`, `subject`, `body_text`, `body_html`, `from_addr`, `cc`, `bcc`, `reply_to`, `in_reply_to`, `references`, `extra_headers`, `attachments` (`filename`, base64 `content`, `maintype`/`subtype`), `priority` |
+| `mail_send` | Send via SMTP: `to`, `subject`, `body_text`, `body_html`, `from_addr`, `cc`, `bcc`, `reply_to`, `in_reply_to`, `references`, `extra_headers`, `attachments` (`filename`, base64 `content`, `maintype`/`subtype`), `priority`, `save_sent` (default true: the message, with Bcc, is appended read to the `\Sent` folder; result `saved_to_sent`; a failed copy never fails the send; `MAILU_SAVE_SENT=false` changes the default) |
 | `mail_mailboxes` | List IMAP mailboxes |
 | `mail_flag` / `mail_move` / `mail_delete` | Flag, move, delete messages |
 
@@ -131,7 +131,7 @@ repo `mailu/mcp-*.yaml`, which is the deploy source of truth.
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 77 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 86 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 7 mail + 43 admin + 3 gmail tools
 ```
