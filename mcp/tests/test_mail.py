@@ -267,6 +267,64 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(conn.expunged, ["41"])  # UID EXPUNGE: only that draft
         self.assertEqual(out["replaced_uid"], 41)
 
+    def _move_with_caps(self, caps):
+        class MoveIMAP(FakeIMAP):
+            capabilities = caps
+
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.bare_expunges = 0
+
+            def uid(self, cmd, *args):
+                if cmd in ("move", "expunge"):
+                    self.uid_calls.append((cmd, args))
+                    return ("OK", [b"ok"])
+                return super().uid(cmd, *args)
+
+            def expunge(self):
+                self.bare_expunges += 1
+                return ("OK", [b"ok"])
+        with patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", MoveIMAP):
+            ok = mail_mod.move_message(self.cfg, "INBOX", 7, "Archive")
+        return ok, FakeIMAP.last
+
+    def test_move_prefers_uid_move(self):
+        ok, conn = self._move_with_caps(("IMAP4REV1", "UIDPLUS", "MOVE"))
+        self.assertTrue(ok)
+        self.assertEqual(conn.uid_calls, [("move", ("7", '"Archive"'))])
+        self.assertEqual(conn.bare_expunges, 0)
+
+    def test_move_without_move_expunges_only_that_uid(self):
+        ok, conn = self._move_with_caps(("IMAP4REV1", "UIDPLUS"))
+        self.assertTrue(ok)
+        self.assertEqual([c for c, _ in conn.uid_calls], ["copy", "store", "expunge"])
+        self.assertIn(("expunge", ("7",)), conn.uid_calls)
+        self.assertEqual(conn.bare_expunges, 0)  # never purges other \Deleted mail
+
+    def test_capabilities_refreshed_after_login(self):
+        # Mailu's nginx greeting omits MOVE/UIDPLUS; Dovecot lists them after login.
+        class ProxyIMAP(FakeIMAP):
+            capabilities = ("IMAP4REV1", "AUTH=PLAIN")
+
+            def capability(self):
+                return ("OK", [b"IMAP4rev1 SASL-IR UIDPLUS MOVE"])
+
+            def uid(self, cmd, *args):
+                if cmd == "move":
+                    self.uid_calls.append((cmd, args))
+                    return ("OK", [b"ok"])
+                return super().uid(cmd, *args)
+        with patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", ProxyIMAP):
+            self.assertTrue(mail_mod.move_message(self.cfg, "INBOX", 9, "Archive"))
+        conn = FakeIMAP.last
+        self.assertIn("MOVE", conn.capabilities)
+        self.assertEqual(conn.uid_calls, [("move", ("9", '"Archive"'))])
+
+    def test_move_last_resort_bare_expunge(self):
+        ok, conn = self._move_with_caps(("IMAP4REV1",))
+        self.assertTrue(ok)
+        self.assertEqual(conn.bare_expunges, 1)
+
     def test_draft_needs_mailbox_login(self):
         cfg = MailConfig(default_from="x@x.io")
         with self.assertRaises(ValueError):

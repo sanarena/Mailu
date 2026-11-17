@@ -91,6 +91,22 @@ def build_search_criteria(
     return " ".join(crit) if crit else "ALL"
 
 
+def _refresh_capabilities(conn) -> None:
+    """Re-read CAPABILITY after login.
+
+    Behind a proxy (Mailu's nginx front) the greeting lists only the proxy's
+    capabilities; the backend's (Dovecot: UIDPLUS, MOVE, ...) appear only
+    after login, and imaplib never refreshes ``conn.capabilities`` itself.
+    """
+    try:
+        typ, dat = conn.capability()
+    except Exception:
+        return
+    if typ == "OK" and dat and dat[0]:
+        raw = dat[0].decode() if isinstance(dat[0], bytes) else str(dat[0])
+        conn.capabilities = tuple(raw.upper().split())
+
+
 @contextmanager
 def connect_imap(cfg: MailConfig):
     if cfg.imap_ssl:
@@ -99,6 +115,7 @@ def connect_imap(cfg: MailConfig):
         conn = imaplib.IMAP4(cfg.imap_host, cfg.imap_port, timeout=cfg.timeout)
     try:
         conn.login(cfg.imap_user, cfg.imap_password)
+        _refresh_capabilities(conn)
         yield conn
     finally:
         try:
@@ -346,13 +363,28 @@ def delete_message(cfg: MailConfig, mailbox: str, uid: int, expunge: bool = True
 
 
 def move_message(cfg: MailConfig, mailbox: str, uid: int, dest_mailbox: str) -> bool:
+    """Move one message, touching nothing else in the source mailbox.
+
+    Prefers UID MOVE (RFC 6851, Dovecot has it). Without MOVE it copies,
+    flags \\Deleted and removes only that UID (UID EXPUNGE, UIDPLUS); a bare
+    EXPUNGE, which would also purge every other \\Deleted message another
+    client left behind, is the last resort for servers with neither.
+    Flags such as unread are kept either way.
+    """
     with connect_imap(cfg) as conn:
         conn.select(_quote_mailbox(mailbox))
+        caps = getattr(conn, "capabilities", ()) or ()
+        if "MOVE" in caps:
+            typ, _ = conn.uid("move", str(uid), _quote_mailbox(dest_mailbox))
+            return typ == "OK"
         typ, _ = conn.uid("copy", str(uid), _quote_mailbox(dest_mailbox))
         if typ != "OK":
             return False
         conn.uid("store", str(uid), "+FLAGS", "(\\Deleted)")
-        conn.expunge()
+        if "UIDPLUS" in caps:
+            conn.uid("expunge", str(uid))
+        else:
+            conn.expunge()
         return True
 
 
