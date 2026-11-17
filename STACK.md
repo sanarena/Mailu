@@ -84,6 +84,15 @@ change process runs through Flux, then mirror back here.
    `kubectl -n mail rollout restart deploy/mail-mailu-postfix` (a Flux
    sync alone does not restart it). Same for webmail after a plugin
    package bump.
+5. rspamd reads `mailu-rspamd-overrides` (mounted as `override.d`) at
+   boot only too: `kubectl -n mail rollout restart
+   deploy/mail-mailu-rspamd` after a change. The ConfigMap holds:
+   - the accept-all policy: no reject or greylist; suspicious mail is
+     scored into Junk;
+   - `dkim_signing.conf`: `sign_headers` without `message-id` and
+     `resent-message-id`. The Cloudflare relay replaces Message-ID, so
+     signing it broke Mailu's own DKIM. The setting is global, so it
+     covers every Mailu domain.
 
 ## Secrets (names only — all live-only, never in git)
 
