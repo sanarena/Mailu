@@ -709,7 +709,7 @@ ORIGINAL_ID = "<orig-1@customer.test>"
 
 def _original_raw() -> bytes:
     m = EmailMessage()
-    m["From"] = "Delon <delon@customer.test>"
+    m["From"] = "Robin <robin@customer.test>"
     m["To"] = "sales@hitsteps.test"
     m["Subject"] = "Pricing"
     m["Date"] = "Tue, 17 Nov 2026 10:05:00 +0000"
@@ -774,12 +774,12 @@ class DraftQuoteTests(unittest.TestCase):
 
     @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
     def test_reply_quotes_the_original_and_completes_references(self):
-        out = mail_mod.save_draft(self.cfg, to=["delon@customer.test"], subject="Re: Pricing",
+        out = mail_mod.save_draft(self.cfg, to=["robin@customer.test"], subject="Re: Pricing",
                                   body_text="Pro is $25 a month.", in_reply_to=ORIGINAL_ID)
         msg = _saved_draft()
         body = msg.get_body(preferencelist=("plain",)).get_content()
         self.assertTrue(body.startswith("Pro is $25 a month."))
-        self.assertIn("Delon <delon@customer.test> wrote:", body)
+        self.assertIn("Robin <robin@customer.test> wrote:", body)
         self.assertIn("> how much is Pro?", body)
         self.assertEqual(str(msg["In-Reply-To"]), ORIGINAL_ID)
         self.assertEqual(str(msg["References"]), "<older@customer.test> " + ORIGINAL_ID)
