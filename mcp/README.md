@@ -67,7 +67,7 @@ job_name: "weekly-catchup", dry_run: true}` first, then re-run with
 | `mail_search` | Search a mailbox: `mailbox`, `limit`, `unseen_only`, `seen`, `flagged`, `since`/`before` (`01-Jan-2025`), `from_`/`to`/`cc`/`subject`/`body`/`text`, `header`+`header_value`, `uids`, `larger`/`smaller` |
 | `mail_read` | Full message: `mailbox`, `uid`, `mark_seen`, `include_body`, `max_bytes` → headers, `body_text`/`body_html`, attachments |
 | `mail_send` | Send via SMTP: `to`, `subject`, `body_text`, `body_html`, `from_addr`, `cc`, `bcc`, `reply_to`, `in_reply_to`, `references`, `extra_headers`, `attachments` (`filename`, base64 `content`, `maintype`/`subtype`), `priority`, `save_sent` (default true: the message, with Bcc, is appended read to the `\Sent` folder; result `saved_to_sent`; a failed copy never fails the send; `MAILU_SAVE_SENT=false` changes the default) |
-| `mail_draft` | Save an unsent message to the `\Drafts` folder for a person to review and send (same fields as `mail_send`, plus `replace_uid` to revise an earlier draft; keeps Bcc, In-Reply-To/References; returns `saved_to`, `uid`, `sent: false`) |
+| `mail_draft` | Save an unsent message to the `\Drafts` folder for a person to review and send (same fields as `mail_send`, plus `replace_uid` to revise an earlier draft; keeps Bcc, In-Reply-To/References and always sets `Date`). A reply (`in_reply_to`) quotes the original below the text like a mail client ("On …, X wrote:" + `>` lines, a cited blockquote in HTML) and completes References; the original is looked up in INBOX, Archive, Sent and Junk. `quote_original: false` turns that off (also on `mail_send`). Returns `saved_to`, `uid`, `sent: false`, `quoted_original` |
 | `mail_mailboxes` | List IMAP mailboxes |
 | `mail_flag` / `mail_move` / `mail_delete` | Flag, move, delete messages |
 
@@ -139,7 +139,7 @@ repo `mailu/mcp-*.yaml`, which is the deploy source of truth.
 ## Verify (no live server needed)
 
 ```bash
-python3 -m unittest discover -s mcp/tests   # 100 tests, must all pass
+python3 -m unittest discover -s mcp/tests   # 108 tests, must all pass
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   | PYTHONPATH=mcp python3 -m mailu_mcp.server   # 8 mail + 43 admin + 3 gmail tools
 ```

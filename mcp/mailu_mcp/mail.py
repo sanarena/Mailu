@@ -10,6 +10,7 @@ from email import policy
 from email.header import decode_header
 from email.message import EmailMessage
 from email.parser import BytesParser
+from email.utils import formatdate
 from typing import Any, Dict, List, Optional
 
 from .config import MailConfig
@@ -395,6 +396,161 @@ def append_message(cfg: MailConfig, mailbox: str, raw: bytes, flags: str = "(\\S
         return typ == "OK"
 
 
+# Headers the builder sets itself; extra_headers cannot override or duplicate them.
+_MANAGED_HEADERS = frozenset({"from", "to", "cc", "bcc", "subject", "date", "message-id",
+                              "mime-version", "content-type", "content-transfer-encoding"})
+_MSGID_RE = re.compile(r"<[^<>\s]+>")
+QUOTE_MAX_CHARS = 20000
+
+
+def _threading(in_reply_to: Optional[str], references: Optional[str]) -> tuple:
+    """Clean In-Reply-To/References: no empty values, and a reply that only
+    names References still points In-Reply-To at the newest message in it."""
+    in_reply_to = (in_reply_to or "").strip() or None
+    references = " ".join(_MSGID_RE.findall(references or "")) or (references or "").strip() or None
+    if not in_reply_to and references:
+        ids = _MSGID_RE.findall(references)
+        in_reply_to = ids[-1] if ids else None
+    return in_reply_to, references
+
+
+def _html_to_text(html: str) -> str:
+    import html as html_mod
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", html)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|</h[1-6]>", "\n", text)
+    text = html_mod.unescape(re.sub(r"<[^>]+>", "", text))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in text.splitlines())).strip()
+
+
+ORIGINAL_SCAN_LIMIT = 5000  # newest messages per folder whose Message-ID is checked
+
+
+def _message_ids(conn, box: str) -> Dict[str, bytes]:
+    """{Message-ID: UID} for the newest messages of ``box``. Read from the
+    headers, not IMAP SEARCH: Mailu's Dovecot enforces full-text search and
+    excludes Message-ID/References from its index, so a header search for an
+    id always comes back empty."""
+    typ, data = conn.select(_quote_mailbox(box), readonly=True)
+    if typ != "OK":
+        return {}
+    try:
+        exists = int((data[0] or b"0").decode())
+    except (ValueError, AttributeError, IndexError):
+        exists = 0
+    if exists <= 0:
+        return {}
+    first = max(1, exists - ORIGINAL_SCAN_LIMIT + 1)
+    typ, fetched = conn.fetch(f"{first}:*", "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    found: Dict[str, bytes] = {}
+    for part in fetched or []:
+        if not (isinstance(part, tuple) and len(part) == 2):
+            continue
+        uid = re.search(rb"UID (\d+)", part[0] or b"")
+        mid = _MSGID_RE.findall((part[1] or b"").decode("utf-8", "replace"))
+        if uid and mid:
+            found[mid[0]] = uid.group(1)
+    return found
+
+
+def _find_original(conn, candidates: List[str]) -> Optional[Dict[str, str]]:
+    """The message a reply answers: the first of ``candidates`` (In-Reply-To,
+    then References newest first) present in INBOX, Archive, Sent or Junk, as
+    {"from", "date", "text", "message_id", "references", "mailbox"}."""
+    wanted = [c for c in dict.fromkeys(candidates) if c]
+    if not wanted:
+        return None
+    folders = list(dict.fromkeys(["INBOX", "Archive", find_sent_mailbox(conn) or "Sent", "Junk"]))
+    index: Dict[str, Dict[str, bytes]] = {}
+    hit = None
+    for mid in wanted:
+        for box in folders:
+            if box not in index:
+                try:
+                    index[box] = _message_ids(conn, box)
+                except Exception:
+                    index[box] = {}
+            if mid in index[box]:
+                hit = (box, index[box][mid], mid)
+                break
+        if hit:
+            break
+    if not hit:
+        return None
+    box, uid, found_id = hit
+    conn.select(_quote_mailbox(box), readonly=True)
+    typ, fetched = conn.uid("fetch", uid.decode(), "(BODY.PEEK[])")
+    if typ != "OK" or not fetched or not isinstance(fetched[0], tuple):
+        return None
+    orig = BytesParser(policy=policy.default).parsebytes(fetched[0][1])
+    part = orig.get_body(preferencelist=("plain", "html"))
+    try:
+        body = part.get_content() if part is not None else ""
+    except Exception:
+        body = ""
+    if part is not None and part.get_content_type() == "text/html":
+        body = _html_to_text(body)
+    return {"from": _decode(orig["From"]), "date": str(orig["Date"] or ""),
+            "text": (body or "").strip(), "message_id": found_id,
+            "references": str(orig["References"] or ""), "mailbox": box}
+
+
+def _quote_block(original: Dict[str, str]) -> Dict[str, str]:
+    """A mail-client style reply quote: "On <date>, <sender> wrote:" and the
+    original text with "> " prefixes (plain) or a cited blockquote (HTML)."""
+    import html as html_mod
+    from email.utils import parsedate_to_datetime
+    when = original.get("date") or ""
+    try:
+        when = parsedate_to_datetime(when).strftime("%a, %d %b %Y at %H:%M")
+    except Exception:
+        pass
+    who = original.get("from") or "the sender"
+    head = f"On {when}, {who} wrote:" if when else f"{who} wrote:"
+    text = original.get("text") or ""
+    if len(text) > QUOTE_MAX_CHARS:
+        text = text[:QUOTE_MAX_CHARS].rstrip() + "\n[…]"
+    lines = [("> " + line) if line.strip() else ">" for line in text.splitlines()]
+    html_body = html_mod.escape(text).replace("\n", "<br>\n")
+    return {
+        "text": "\n\n" + head + "\n" + "\n".join(lines) + "\n",
+        "html": ('<br><div>' + html_mod.escape(head) + '</div>'
+                 '<blockquote type="cite" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;'
+                 'padding-left:1ex">' + html_body + '</blockquote>'),
+    }
+
+
+def _reply_context(cfg: MailConfig, in_reply_to: Optional[str], references: Optional[str],
+                   extra_headers: Optional[Dict[str, str]], quote_original: Optional[bool]):
+    """For a reply: (in_reply_to, references, quoted, info). Looks the original
+    up in this mailbox to quote it and to complete the References chain."""
+    for k, v in (extra_headers or {}).items():  # same precedence as _build_message
+        if str(k).strip().lower() == "in-reply-to" and not in_reply_to:
+            in_reply_to = str(v or "")
+        elif str(k).strip().lower() == "references" and not references:
+            references = str(v or "")
+    in_reply_to, references = _threading(in_reply_to, references)
+    info: Dict[str, Any] = {"quoted_original": False}
+    if not in_reply_to or quote_original is False or not cfg.imap_user:
+        return in_reply_to, references, None, info
+    # In-Reply-To first, then the References chain newest first: agents
+    # sometimes point In-Reply-To at an earlier draft of their own reply.
+    candidates = _MSGID_RE.findall(in_reply_to) + list(reversed(_MSGID_RE.findall(references or "")))
+    try:
+        with connect_imap(cfg) as conn:
+            original = _find_original(conn, candidates)
+    except Exception as exc:
+        info["quote_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        return in_reply_to, references, None, info
+    if not original:
+        info["quote_error"] = "original message not found in INBOX, Archive, Sent or Junk"
+        return in_reply_to, references, None, info
+    if not references:
+        chain = _MSGID_RE.findall(original.get("references") or "") + [original["message_id"]]
+        references = " ".join(dict.fromkeys(chain))
+    info.update({"quoted_original": True, "quote_source": original["mailbox"]})
+    return in_reply_to, references, _quote_block(original), info
+
+
 def _build_message(
     cfg: MailConfig,
     to: List[str],
@@ -410,8 +566,11 @@ def _build_message(
     extra_headers: Optional[Dict[str, str]] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
     priority: Optional[str] = None,
+    quoted: Optional[Dict[str, str]] = None,
 ):
     """The outgoing message, shared by mail_send and mail_draft.
+    ``quoted`` ({"text", "html"} from :func:`_quote_block`) is appended below
+    the body, like a mail client's reply quote.
     Returns (msg, sender, to, cc, bcc); Bcc is never a header here."""
     sender = from_addr or cfg.default_from or cfg.smtp_user
     if not sender:
@@ -425,6 +584,22 @@ def _build_message(
         bcc = [bcc]
     if not to:
         raise ValueError("Recipient list 'to' must not be empty")
+    # Threading headers may also arrive through extra_headers; take them from
+    # there instead of writing a second (or an empty) header.
+    extra: Dict[str, str] = {}
+    for k, v in (extra_headers or {}).items():
+        value = str(v or "").strip()
+        key = str(k).strip()
+        if not value or not key:
+            continue
+        lower = key.lower()
+        if lower == "in-reply-to":
+            in_reply_to = in_reply_to or value
+        elif lower == "references":
+            references = references or value
+        elif lower not in _MANAGED_HEADERS:
+            extra[key] = value
+    in_reply_to, references = _threading(in_reply_to, references)
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = ", ".join(to)
@@ -442,13 +617,20 @@ def _build_message(
     elif priority == "low":
         msg["X-Priority"] = "5"
         msg["Importance"] = "low"
-    for k, v in (extra_headers or {}).items():
+    for k, v in extra.items():
         msg[k] = v
     msg["Subject"] = subject
+    # A draft never passes through Postfix, which is what stamps Date on sent
+    # mail; without it mail apps show and sort drafts badly.
+    msg["Date"] = formatdate(localtime=True)
     if "Message-ID" not in msg:
         from email.utils import make_msgid
         domain = sender.rsplit("@", 1)[-1] if "@" in sender else None
         msg["Message-ID"] = make_msgid(domain=domain)
+    if quoted:
+        body_text = (body_text or "").rstrip() + quoted["text"]
+        if body_html:
+            body_html = body_html + quoted["html"]
     if body_html:
         msg.set_content(body_text or "")
         msg.add_alternative(body_html, subtype="html")
@@ -481,11 +663,14 @@ def send_email(
     attachments: Optional[List[Dict[str, Any]]] = None,
     priority: Optional[str] = None,
     save_sent: Optional[bool] = None,
+    quote_original: Optional[bool] = None,
 ) -> Dict[str, Any]:
+    in_reply_to, references, quoted, reply_info = _reply_context(
+        cfg, in_reply_to, references, extra_headers, quote_original)
     msg, sender, to, cc, bcc = _build_message(
         cfg, to, subject, body_text=body_text, body_html=body_html, from_addr=from_addr,
         cc=cc, bcc=bcc, reply_to=reply_to, in_reply_to=in_reply_to, references=references,
-        extra_headers=extra_headers, attachments=attachments, priority=priority)
+        extra_headers=extra_headers, attachments=attachments, priority=priority, quoted=quoted)
     recipients = list(to) + list(cc or []) + list(bcc or [])
     implicit_tls = cfg.smtp_port == 465  # smtps: TLS from the first byte
     if implicit_tls:
@@ -500,7 +685,7 @@ def send_email(
             s.login(cfg.smtp_user, cfg.smtp_password)
         s.send_message(msg, from_addr=sender, to_addrs=recipients)
     result: Dict[str, Any] = {"message_id": str(msg["Message-ID"] or ""), "from": sender,
-                              "to": ", ".join(recipients)}
+                              "to": ", ".join(recipients), **reply_info}
 
     # Keep a copy in Sent, like a mail client does. Never fails the send:
     # the message is already out, so problems are only reported.
@@ -538,18 +723,23 @@ def save_draft(
     attachments: Optional[List[Dict[str, Any]]] = None,
     priority: Optional[str] = None,
     replace_uid: Optional[int] = None,
+    quote_original: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Save an unsent message to the Drafts folder (nothing is sent).
 
     The draft keeps Bcc (a mail client sends it from there), In-Reply-To and
-    References (threading). replace_uid removes that older draft from Drafts
-    after the new one is stored, so a draft can be revised in place."""
+    References (threading). A reply quotes the original message below the text,
+    like a mail client, unless quote_original is false. replace_uid removes that
+    older draft from Drafts after the new one is stored, so a draft can be
+    revised in place."""
     if not cfg.imap_user:
         raise ValueError("Saving a draft needs a mailbox login (HTTP Basic auth)")
+    in_reply_to, references, quoted, reply_info = _reply_context(
+        cfg, in_reply_to, references, extra_headers, quote_original)
     msg, sender, to, cc, bcc = _build_message(
         cfg, to, subject, body_text=body_text, body_html=body_html, from_addr=from_addr,
         cc=cc, bcc=bcc, reply_to=reply_to, in_reply_to=in_reply_to, references=references,
-        extra_headers=extra_headers, attachments=attachments, priority=priority)
+        extra_headers=extra_headers, attachments=attachments, priority=priority, quoted=quoted)
     if bcc:
         msg["Bcc"] = ", ".join(bcc)
     raw = msg.as_bytes(policy=policy.SMTP)
@@ -559,7 +749,7 @@ def save_draft(
         m = re.search(rb"APPENDUID \d+ (\d+)", _resp_text(resp))
         result: Dict[str, Any] = {"saved_to": box, "uid": int(m.group(1)) if m else None,
                                   "message_id": str(msg["Message-ID"] or ""), "from": sender,
-                                  "to": ", ".join(to + cc), "sent": False}
+                                  "to": ", ".join(to + cc), "sent": False, **reply_info}
         if replace_uid:
             conn.select(_quote_mailbox(box))
             typ, _ = conn.uid("store", str(int(replace_uid)), "+FLAGS", "(\\Deleted)")

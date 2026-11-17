@@ -704,5 +704,142 @@ class MailTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[2])["result"], {})
 
 
+ORIGINAL_ID = "<orig-1@customer.test>"
+
+
+def _original_raw() -> bytes:
+    m = EmailMessage()
+    m["From"] = "Delon <delon@customer.test>"
+    m["To"] = "sales@hitsteps.test"
+    m["Subject"] = "Pricing"
+    m["Date"] = "Tue, 17 Nov 2026 10:05:00 +0000"
+    m["Message-ID"] = ORIGINAL_ID
+    m["References"] = "<older@customer.test>"
+    m.set_content("Hi,\n\nhow much is Pro?\nThanks")
+    return m.as_bytes()
+
+
+class QuoteIMAP(DraftIMAP):
+    """Drafts + an INBOX that holds the message being answered. Like Mailu's
+    Dovecot, SEARCH never finds a Message-ID (FTS excludes the header), so the
+    original must be found from the fetched headers."""
+    found_in = "INBOX"
+
+    def select(self, box, readonly=False):
+        self.selected = box.strip('"')
+        return ("OK", [b"3"])
+
+    def fetch(self, msgset, what):
+        if self.selected != QuoteIMAP.found_in:
+            return ("OK", [])
+        rows = [(b"1 (UID 5 BODY[HEADER.FIELDS (MESSAGE-ID)] {30}", b"Message-ID: <other@x.io>\r\n\r\n"), b")",
+                (b"3 (UID 7 BODY[HEADER.FIELDS (MESSAGE-ID)] {40}",
+                 b"Message-ID: " + ORIGINAL_ID.encode() + b"\r\n\r\n"), b")"]
+        return ("OK", rows)
+
+    def uid(self, cmd, *args):
+        self.uid_calls.append((cmd, args))
+        if cmd == "search":
+            return ("OK", [b""])
+        if cmd == "fetch" and args[0] == "7":
+            raw = _original_raw()
+            return ("OK", [(f"3 (UID 7 BODY[] {{{len(raw)}}}".encode(), raw), b")"])
+        if cmd == "expunge":
+            self.expunged.append(args[0])
+        return ("OK", [b"ok"])
+
+
+def _saved_draft():
+    from email import policy as _policy
+    from email.parser import BytesParser as _BP
+    box, flags, date, raw = DovecotIMAP.instances[-1].appended
+    return _BP(policy=_policy.default).parsebytes(raw)
+
+
+class DraftQuoteTests(unittest.TestCase):
+    """Drafts must look like a mail client's: a Date, clean threading headers,
+    and for a reply the quoted original below the new text."""
+
+    def setUp(self):
+        DovecotIMAP.instances = []
+        QuoteIMAP.found_in = "INBOX"
+        self.cfg = MailConfig(imap_user="sales@hitsteps.test", imap_password="p",
+                              smtp_host="h", smtp_port=465, smtp_user="sales@hitsteps.test",
+                              smtp_password="p", default_from="sales@hitsteps.test")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_every_draft_has_a_date(self):
+        mail_mod.save_draft(self.cfg, to=["c@x.io"], subject="New")
+        self.assertTrue(_saved_draft()["Date"])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_reply_quotes_the_original_and_completes_references(self):
+        out = mail_mod.save_draft(self.cfg, to=["delon@customer.test"], subject="Re: Pricing",
+                                  body_text="Pro is $25 a month.", in_reply_to=ORIGINAL_ID)
+        msg = _saved_draft()
+        body = msg.get_body(preferencelist=("plain",)).get_content()
+        self.assertTrue(body.startswith("Pro is $25 a month."))
+        self.assertIn("Delon <delon@customer.test> wrote:", body)
+        self.assertIn("> how much is Pro?", body)
+        self.assertEqual(str(msg["In-Reply-To"]), ORIGINAL_ID)
+        self.assertEqual(str(msg["References"]), "<older@customer.test> " + ORIGINAL_ID)
+        self.assertEqual((out["quoted_original"], out["quote_source"]), (True, "INBOX"))
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_original_found_in_archive(self):
+        QuoteIMAP.found_in = "Archive"
+        out = mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                                  in_reply_to=ORIGINAL_ID)
+        self.assertEqual(out["quote_source"], "Archive")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_falls_back_to_references_when_in_reply_to_is_unknown(self):
+        # Seen live: an agent pointed In-Reply-To at an earlier draft of its own reply.
+        out = mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                                  in_reply_to="<my-old-draft@hitsteps.test>",
+                                  references="<older@customer.test> " + ORIGINAL_ID + " <my-old-draft@hitsteps.test>")
+        self.assertTrue(out["quoted_original"])
+        body = _saved_draft().get_body(preferencelist=("plain",)).get_content()
+        self.assertIn("> how much is Pro?", body)
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_quote_can_be_turned_off(self):
+        out = mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                                  in_reply_to=ORIGINAL_ID, quote_original=False)
+        body = _saved_draft().get_body(preferencelist=("plain",)).get_content()
+        self.assertNotIn("wrote:", body)
+        self.assertFalse(out["quoted_original"])
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_missing_original_still_saves_the_draft(self):
+        out = mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                                  in_reply_to="<gone@x.io>")
+        self.assertEqual(out["uid"], 42)
+        self.assertFalse(out["quoted_original"])
+        self.assertIn("not found", out["quote_error"])
+        self.assertEqual(str(_saved_draft()["In-Reply-To"]), "<gone@x.io>")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_threading_headers_never_empty_or_duplicated(self):
+        mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                            references="<a@x.io> " + ORIGINAL_ID,
+                            extra_headers={"In-Reply-To": "", "References": "<other@x.io>",
+                                           "X-Hitsteps-Internal-Dispatch": "v1", "Date": "bogus"})
+        msg = _saved_draft()
+        self.assertEqual(msg.get_all("In-Reply-To"), [ORIGINAL_ID])  # newest id of References
+        self.assertEqual(msg.get_all("References"), ["<a@x.io> " + ORIGINAL_ID])
+        self.assertEqual(len(msg.get_all("Date")), 1)
+        self.assertNotEqual(str(msg["Date"]), "bogus")
+        self.assertEqual(str(msg["X-Hitsteps-Internal-Dispatch"]), "v1")
+
+    @patch("mcp.mailu_mcp.mail.imaplib.IMAP4_SSL", QuoteIMAP)
+    def test_html_reply_gets_a_cited_blockquote(self):
+        mail_mod.save_draft(self.cfg, to=["d@x.io"], subject="Re: P", body_text="ok",
+                            body_html="<p>ok</p>", in_reply_to=ORIGINAL_ID)
+        html = _saved_draft().get_body(preferencelist=("html",)).get_content()
+        self.assertIn('<blockquote type="cite"', html)
+        self.assertIn("how much is Pro?", html)
+
+
 if __name__ == "__main__":
     unittest.main()

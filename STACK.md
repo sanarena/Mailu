@@ -18,7 +18,7 @@ stdlib-only Python except the two Roundcube plugins (PHP/JS).
 | Roundcube `mail_backup` plugin | `roundcube-mail-backup/` | plugin 1.0.0 | `sanarena/roundcube-backup` (digest-pinned in Flux) | Pi integration ([README](roundcube-mail-backup/README.md)) |
 | Roundcube `compose_from` plugin | `roundcube-compose-from/` | plugin 1.0.0 | `sanarena/roundcube-compose-from` (digest-pinned in Flux) | Pi integration ([README](roundcube-compose-from/README.md)) |
 
-Total: 202 unit tests, all green (`python3 -m unittest discover -s
+Total: 210 unit tests, all green (`python3 -m unittest discover -s
 <dir>/tests` per component, no live server needed). The Roundcube
 plugins have no unit harness (`php -l` + `node --check` only) and are
 covered by live browser E2E instead.
@@ -109,7 +109,7 @@ change process runs through Flux, then mirror back here.
 ## QA and operations
 
 ```bash
-python3 -m unittest discover -s mcp/tests        # 100 tests
+python3 -m unittest discover -s mcp/tests        # 108 tests
 python3 -m unittest discover -s tracker/tests    # 96 tests
 python3 -m unittest discover -s scheduler/tests  # 25 tests
 kubectl -n mail exec deploy/mail-mcp -- python3 -c \

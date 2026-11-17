@@ -84,7 +84,11 @@ def build_server(ctx=None) -> McpServer:
                       "attachments": {"type": "array", "items": {"type": "object"}},
                       "priority": {"type": "string", "enum": ["high", "normal", "low"]},
                       "save_sent": {"type": "boolean", "default": True,
-                                    "description": "Also store the message (with Bcc) in the Sent folder"}}})
+                                    "description": "Also store the message (with Bcc) in the Sent folder"},
+                      "quote_original": {"type": "boolean", "default": True,
+                                         "description": "For a reply (in_reply_to): quote the original message below "
+                                                        "your text, like a mail client. Default true; the result says "
+                                                        "quoted_original true/false"}}})
     def _send(args):
         return mail_mod.send_email(m, **args)
 
@@ -105,7 +109,11 @@ def build_server(ctx=None) -> McpServer:
                       "attachments": {"type": "array", "items": {"type": "object"}},
                       "priority": {"type": "string", "enum": ["high", "normal", "low"]},
                       "replace_uid": {"type": "integer",
-                                      "description": "UID of an earlier draft (in Drafts) to replace"}}})
+                                      "description": "UID of an earlier draft (in Drafts) to replace"},
+                      "quote_original": {"type": "boolean", "default": True,
+                                         "description": "For a reply (in_reply_to): quote the original message below "
+                                                        "your text, like a mail client. Default true; the result says "
+                                                        "quoted_original true/false"}}})
     def _draft(args):
         return mail_mod.save_draft(m, **args)
 
